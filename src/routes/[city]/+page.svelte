@@ -110,12 +110,14 @@
 	);
 	const currentHourDecimal = $derived(activeClock.getHours() + activeClock.getMinutes() / 60);
 	const isDaytime = $derived(currentHourDecimal >= 6 && currentHourDecimal < 18);
+	const daylightStrength = $derived(resolveDaylightStrength(currentHourDecimal));
 	const celestialProgress = $derived(resolveCelestialProgress(currentHourDecimal, isDaytime));
 	const celestialXPercent = $derived(8 + 84 * celestialProgress);
 	const celestialYPercent = $derived(68 - Math.sin(Math.PI * celestialProgress) * 46);
 	const celestialStyle = $derived(
 		`left:${celestialXPercent.toFixed(2)}%; top:${celestialYPercent.toFixed(2)}%;`
 	);
+	const sceneToneStyle = $derived(buildSceneToneStyle(daylightStrength));
 	const debugClockLabel = $derived(formatClockLabel(activeClock));
 	const debugOffsetLabel = $derived(formatOffsetLabel(clampDebugTimeOffset(debugTimeOffsetMinutes)));
 	const clampedDebugOffsetMinutes = $derived(clampDebugTimeOffset(debugTimeOffsetMinutes));
@@ -279,6 +281,106 @@
 
 	function clampUnit(value: number): number {
 		return Math.min(1, Math.max(0, value));
+	}
+
+	function smoothstepUnit(value: number): number {
+		const clamped = clampUnit(value);
+		return clamped * clamped * (3 - 2 * clamped);
+	}
+
+	function resolveDaylightStrength(hourDecimal: number): number {
+		const safeHour = Number.isFinite(hourDecimal) ? ((hourDecimal % 24) + 24) % 24 : 12;
+		const dawnStart = 4.5;
+		const sunrise = 7;
+		const noon = 12;
+		const lateAfternoon = 18.5;
+		const duskEnd = 21.5;
+
+		if (safeHour < dawnStart || safeHour >= duskEnd) {
+			return 0;
+		}
+
+		if (safeHour < sunrise) {
+			return smoothstepUnit((safeHour - dawnStart) / (sunrise - dawnStart)) * 0.55;
+		}
+
+		if (safeHour <= noon) {
+			return 0.55 + smoothstepUnit((safeHour - sunrise) / (noon - sunrise)) * 0.45;
+		}
+
+		if (safeHour <= lateAfternoon) {
+			return 0.55 + smoothstepUnit((lateAfternoon - safeHour) / (lateAfternoon - noon)) * 0.45;
+		}
+
+		return smoothstepUnit((duskEnd - safeHour) / (duskEnd - lateAfternoon)) * 0.55;
+	}
+
+	function mixChannel(start: number, end: number, amount: number): number {
+		return Math.round(start + (end - start) * clampUnit(amount));
+	}
+
+	function mixAlpha(start: number, end: number, amount: number): number {
+		return start + (end - start) * clampUnit(amount);
+	}
+
+	function mixRgb(
+		start: [number, number, number],
+		end: [number, number, number],
+		amount: number
+	): string {
+		return `rgb(${mixChannel(start[0], end[0], amount)}, ${mixChannel(start[1], end[1], amount)}, ${mixChannel(
+			start[2],
+			end[2],
+			amount
+		)})`;
+	}
+
+	function mixRgba(
+		start: [number, number, number, number],
+		end: [number, number, number, number],
+		amount: number
+	): string {
+		return `rgba(${mixChannel(start[0], end[0], amount)}, ${mixChannel(start[1], end[1], amount)}, ${mixChannel(
+			start[2],
+			end[2],
+			amount
+		)}, ${mixAlpha(start[3], end[3], amount).toFixed(3)})`;
+	}
+
+	function buildSceneToneStyle(daylight: number): string {
+		const day = clampUnit(daylight);
+		const night = 1 - day;
+
+		return [
+			`--daylight:${day.toFixed(3)}`,
+			`--night:${night.toFixed(3)}`,
+			`--scene-bg-top:${mixRgb([12, 45, 63], [137, 199, 227], day)}`,
+			`--scene-bg-bottom:${mixRgb([6, 21, 32], [54, 126, 162], day)}`,
+			`--sky-sun-glow:${mixRgba([255, 188, 106, 0.28], [255, 226, 168, 0.58], day)}`,
+			`--sky-cyan-glow:${mixRgba([63, 161, 192, 0.12], [130, 222, 239, 0.36], day)}`,
+			`--overlay-top:${mixRgba([8, 25, 35, 0.25], [14, 49, 69, 0.06], day)}`,
+			`--overlay-mid:${mixRgba([7, 22, 32, 0.78], [22, 76, 102, 0.38], day)}`,
+			`--overlay-bottom:${mixRgba([5, 18, 27, 0.98], [20, 67, 92, 0.54], day)}`,
+			`--surface:${mixRgba([6, 26, 34, 0.74], [14, 57, 80, 0.46], day)}`,
+			`--surface-strong:${mixRgba([6, 26, 34, 0.86], [13, 53, 74, 0.6], day)}`,
+			`--text-strong:${mixRgb([235, 247, 252], [247, 252, 255], day)}`,
+			`--text-soft:${mixRgb([189, 217, 228], [218, 237, 245], day)}`,
+			`--chip-color:${mixRgb([255, 214, 130], [255, 201, 108], day)}`,
+			`--control-bg:${mixRgba([8, 29, 41, 0.72], [19, 73, 97, 0.56], day)}`,
+			`--control-bg-strong:${mixRgba([8, 33, 45, 0.68], [24, 82, 108, 0.58], day)}`,
+			`--control-border:${mixRgba([170, 214, 224, 0.3], [196, 230, 238, 0.5], day)}`,
+			`--control-text:${mixRgb([225, 243, 250], [236, 249, 253], day)}`,
+			`--panel-heading:${mixRgb([154, 214, 228], [126, 197, 217], day)}`,
+			`--city-haze:${mixRgba([173, 226, 240, 0.21], [206, 239, 248, 0.3], day)}`,
+			`--city-ridge-back:${mixRgba([181, 219, 231, 0.18], [231, 246, 251, 0.35], day)}`,
+			`--city-ridge-mid:${mixRgba([167, 212, 226, 0.22], [225, 244, 250, 0.4], day)}`,
+			`--city-ridge-front:${mixRgba([193, 233, 241, 0.16], [238, 251, 255, 0.44], day)}`,
+			`--city-facade:${mixRgba([10, 38, 56, 0.56], [41, 108, 138, 0.42], day)}`,
+			`--city-facade-front:${mixRgba([7, 26, 39, 0.86], [24, 87, 116, 0.62], day)}`,
+			`--city-waterline:${mixRgba([73, 155, 180, 0.1], [150, 221, 236, 0.24], day)}`,
+			`--city-road:${mixRgba([4, 19, 29, 0.74], [18, 77, 104, 0.44], day)}`,
+			`--city-window:${mixRgba([255, 226, 154, 0.84], [255, 248, 201, 0.7], day)}`
+		].join(';');
 	}
 
 	function onDebugPrecipitationInput(event: Event): void {
@@ -590,7 +692,10 @@
 
 <main class="page">
 	{#if status === 'ok' && report}
-		<div class={`scene mode-${mode} condition-${activeWeatherCondition} ${compactMode ? 'compact' : ''}`}>
+		<div
+			class={`scene mode-${mode} condition-${activeWeatherCondition} ${compactMode ? 'compact' : ''}`}
+			style={sceneToneStyle}
+		>
 			{#if mode === 'photo' && activeImage?.url}
 				<div class="photo" style={`background-image:url('${toBackgroundImageCss(activeImage.url)}')`}></div>
 			{/if}
@@ -1073,8 +1178,33 @@
 		margin: 0;
 		border-radius: 0;
 		overflow: hidden;
-		background: linear-gradient(160deg, #10384a, #0d2734);
+		--daylight: 0;
+		--night: 1;
+		--scene-bg-top: #10384a;
+		--scene-bg-bottom: #0d2734;
+		--sky-sun-glow: rgba(255, 188, 106, 0.28);
+		--sky-cyan-glow: rgba(63, 161, 192, 0.12);
+		--overlay-top: rgba(8, 25, 35, 0.25);
+		--overlay-mid: rgba(7, 22, 32, 0.78);
+		--overlay-bottom: rgba(5, 18, 27, 0.98);
+		--chip-color: #ffd88b;
+		--control-bg: rgba(8, 29, 41, 0.72);
+		--control-bg-strong: rgba(8, 33, 45, 0.68);
+		--control-border: rgba(170, 214, 224, 0.3);
+		--control-text: #e3f3f8;
+		--panel-heading: #9cd7e4;
+		--city-haze: rgba(173, 226, 240, 0.21);
+		--city-ridge-back: rgba(181, 219, 231, 0.18);
+		--city-ridge-mid: rgba(167, 212, 226, 0.22);
+		--city-ridge-front: rgba(193, 233, 241, 0.16);
+		--city-facade: rgba(10, 38, 56, 0.56);
+		--city-facade-front: rgba(7, 26, 39, 0.86);
+		--city-waterline: rgba(73, 155, 180, 0.1);
+		--city-road: rgba(4, 19, 29, 0.74);
+		--city-window: rgba(255, 226, 154, 0.84);
+		background: linear-gradient(180deg, var(--scene-bg-top), var(--scene-bg-bottom));
 		box-shadow: none;
+		transition: background 900ms linear;
 	}
 
 	.photo,
@@ -1095,24 +1225,34 @@
 		background-size: cover;
 		background-position: center;
 		background-repeat: no-repeat;
-		filter: saturate(1.1) contrast(1.05);
+		filter:
+			saturate(calc(0.92 + var(--daylight) * 0.28))
+			contrast(calc(0.95 + var(--daylight) * 0.12))
+			brightness(calc(0.72 + var(--daylight) * 0.34));
+		transition: filter 900ms linear;
 	}
 
 	.gradient {
 		z-index: 1;
 		background:
-			radial-gradient(circle at 20% 0%, rgba(255, 219, 145, 0.42), transparent 40%),
+			radial-gradient(circle at 20% 0%, var(--sky-sun-glow), transparent 42%),
+			radial-gradient(circle at 90% 110%, var(--sky-cyan-glow), transparent 38%),
 			linear-gradient(
 				180deg,
-				rgba(7, 24, 34, 0.16) 0%,
-				rgba(6, 21, 30, 0.75) 56%,
-				rgba(5, 18, 26, 0.96) 100%
+				var(--overlay-top) 0%,
+				var(--overlay-mid) 56%,
+				var(--overlay-bottom) 100%
 			);
+		transition: background 900ms linear, opacity 900ms linear;
 	}
 
 	.minimal-city-layer {
 		z-index: 2;
 		pointer-events: none;
+		filter:
+			brightness(calc(0.72 + var(--daylight) * 0.46))
+			saturate(calc(0.72 + var(--daylight) * 0.4));
+		transition: filter 900ms linear;
 	}
 
 	.minimal-city-svg {
@@ -1152,20 +1292,12 @@
 		border-radius: 999px;
 	}
 
-	.mode-minimal .minimal-city-layer.day .skyline-window {
-		opacity: 0.16;
-	}
-
-	.mode-minimal .minimal-city-layer.night .skyline-window {
-		opacity: 0.72;
-	}
-
 	.skyline {
 		vector-effect: non-scaling-stroke;
 	}
 
 	.city-haze {
-		fill: rgba(173, 226, 240, 0.24);
+		fill: var(--city-haze);
 		filter: blur(16px);
 	}
 
@@ -1189,22 +1321,22 @@
 	}
 
 	.skyline-ridge-back {
-		stroke: rgba(181, 219, 231, 0.2);
+		stroke: var(--city-ridge-back);
 		stroke-width: 1.6px;
 	}
 
 	.skyline-ridge-mid {
-		stroke: rgba(167, 212, 226, 0.24);
+		stroke: var(--city-ridge-mid);
 		stroke-width: 1.8px;
 	}
 
 	.skyline-ridge-front {
-		stroke: rgba(193, 233, 241, 0.16);
+		stroke: var(--city-ridge-front);
 		stroke-width: 2px;
 	}
 
 	.skyline-facade {
-		fill: rgba(10, 38, 56, 0.5);
+		fill: var(--city-facade);
 	}
 
 	.skyline-facade-mid {
@@ -1212,7 +1344,7 @@
 	}
 
 	.skyline-facade-front {
-		fill: rgba(7, 26, 39, 0.82);
+		fill: var(--city-facade-front);
 	}
 
 	.skyline-ground {
@@ -1220,28 +1352,28 @@
 	}
 
 	.skyline-waterline {
-		fill: rgba(73, 155, 180, 0.11);
+		fill: var(--city-waterline);
 		filter: blur(1px);
 	}
 
 	.skyline-road {
-		fill: rgba(4, 19, 29, 0.7);
+		fill: var(--city-road);
 	}
 
 	.skyline-windows-back .skyline-window {
-		opacity: 0.35;
+		opacity: calc(0.12 + var(--night) * 0.34);
 	}
 
 	.skyline-windows-mid .skyline-window {
-		opacity: 0.5;
+		opacity: calc(0.18 + var(--night) * 0.42);
 	}
 
 	.skyline-windows-front .skyline-window {
-		opacity: 0.64;
+		opacity: calc(0.24 + var(--night) * 0.54);
 	}
 
 	.skyline-window {
-		fill: rgba(255, 226, 154, 0.75);
+		fill: var(--city-window);
 	}
 
 	.mode-minimal .photo {
@@ -1249,10 +1381,7 @@
 	}
 
 	.mode-minimal .gradient {
-		background:
-			radial-gradient(circle at 18% -8%, rgba(255, 190, 96, 0.3), transparent 40%),
-			radial-gradient(circle at 90% 110%, rgba(67, 228, 228, 0.26), transparent 35%),
-			linear-gradient(180deg, rgba(12, 45, 61, 0.78), rgba(6, 20, 30, 0.95));
+		opacity: 1;
 	}
 
 	.mode-all-info .photo {
@@ -1260,10 +1389,7 @@
 	}
 
 	.mode-all-info .gradient {
-		background:
-			radial-gradient(circle at 12% 0%, rgba(79, 191, 213, 0.14), transparent 35%),
-			radial-gradient(circle at 100% 120%, rgba(255, 199, 112, 0.11), transparent 40%),
-			linear-gradient(180deg, rgba(5, 24, 35, 0.85), rgba(4, 18, 27, 0.96));
+		opacity: 0.9;
 	}
 
 	.mode-all-info .fx-host {
@@ -1289,7 +1415,7 @@
 	}
 
 	.content-compact .current {
-		background: rgba(8, 33, 46, 0.76);
+		background: var(--surface);
 		padding: 1.15rem;
 	}
 
@@ -1322,7 +1448,7 @@
 		font-weight: 700;
 		letter-spacing: 0.08em;
 		text-transform: uppercase;
-		color: #ffd88b;
+		color: var(--chip-color);
 	}
 
 	h1 {
@@ -1341,7 +1467,8 @@
 		gap: 0.45rem;
 		padding: 0.28rem;
 		border-radius: 999px;
-		background: rgba(8, 29, 41, 0.66);
+		background: var(--control-bg);
+		border: 1px solid var(--control-border);
 	}
 
 	.mode-switch button {
@@ -1364,9 +1491,9 @@
 	}
 
 	.image-menu-toggle {
-		border: 1px solid rgba(192, 226, 234, 0.42);
-		background: rgba(7, 28, 40, 0.68);
-		color: #e6f8fc;
+		border: 1px solid var(--control-border);
+		background: var(--control-bg-strong);
+		color: var(--control-text);
 		border-radius: 999px;
 		padding: 0.28rem 0.62rem;
 		font-size: 0.76rem;
@@ -1378,8 +1505,8 @@
 		top: calc(100% + 0.35rem);
 		right: 0;
 		width: min(300px, 90vw);
-		background: rgba(7, 30, 42, 0.92);
-		border: 1px solid rgba(180, 223, 233, 0.35);
+		background: var(--surface-strong);
+		border: 1px solid var(--control-border);
 		border-radius: 12px;
 		padding: 0.5rem;
 		display: grid;
@@ -1389,9 +1516,9 @@
 
 	.image-menu-action,
 	.image-menu-reset {
-		border: 1px solid rgba(174, 217, 229, 0.28);
-		background: rgba(8, 33, 46, 0.68);
-		color: #ebf9fd;
+		border: 1px solid var(--control-border);
+		background: var(--control-bg-strong);
+		color: var(--control-text);
 		border-radius: 9px;
 		padding: 0.42rem 0.56rem;
 		font-size: 0.78rem;
@@ -1411,13 +1538,13 @@
 
 	.image-menu-file label {
 		font-size: 0.74rem;
-		color: #c9e8f0;
+		color: var(--text-soft);
 	}
 
 	.image-menu-file input {
-		border: 1px solid rgba(173, 219, 230, 0.34);
-		background: rgba(8, 33, 45, 0.72);
-		color: #edf9fd;
+		border: 1px solid var(--control-border);
+		background: var(--control-bg-strong);
+		color: var(--control-text);
 		border-radius: 8px;
 		padding: 0.3rem 0.42rem;
 		font-size: 0.75rem;
@@ -1431,8 +1558,8 @@
 	}
 
 	.debug-panel {
-		background: rgba(6, 27, 38, 0.72);
-		border: 1px solid rgba(169, 214, 224, 0.35);
+		background: var(--surface-strong);
+		border: 1px solid var(--control-border);
 		border-radius: 14px;
 		padding: 0.5rem;
 		min-width: 260px;
@@ -1442,7 +1569,7 @@
 		margin: 0 0 0.35rem;
 		font-size: 0.78rem;
 		font-weight: 700;
-		color: #9cd7e4;
+		color: var(--panel-heading);
 		text-transform: uppercase;
 		letter-spacing: 0.06em;
 	}
@@ -1451,18 +1578,18 @@
 		margin: 0 0 0.25rem;
 		font-size: 0.72rem;
 		letter-spacing: 0.05em;
-		color: #9bc0ca;
+		color: var(--text-soft);
 		text-transform: uppercase;
 	}
 
 	.debug-info {
 		margin: 0 0 0.5rem;
 		font-size: 0.76rem;
-		color: #b6d6df;
+		color: var(--text-soft);
 	}
 
 	.debug-info strong {
-		color: #e7fbff;
+		color: var(--text-strong);
 	}
 
 	.debug-info span {
@@ -1499,20 +1626,20 @@
 	}
 
 	.debug-precipitation-head strong {
-		color: #f5f7c2;
+		color: var(--text-strong);
 		font-size: 0.82rem;
 	}
 
 	.debug-precipitation-range {
 		width: 100%;
-		accent-color: #7de6ef;
+		accent-color: var(--accent-2);
 	}
 
 	.debug-precipitation-number {
 		width: 84px;
-		border: 1px solid rgba(173, 219, 230, 0.34);
-		background: rgba(8, 33, 45, 0.72);
-		color: #ecf9fc;
+		border: 1px solid var(--control-border);
+		background: var(--control-bg-strong);
+		color: var(--control-text);
 		border-radius: 8px;
 		padding: 0.28rem 0.45rem;
 		font-size: 0.8rem;
@@ -1536,21 +1663,21 @@
 	}
 
 	.debug-time-head strong {
-		color: #f5f7c2;
+		color: var(--text-strong);
 		font-size: 0.82rem;
 	}
 
 	.debug-time-info {
 		margin: 0;
 		font-size: 0.74rem;
-		color: #b3d5dd;
+		color: var(--text-soft);
 	}
 
 	.debug-time-number {
 		width: 100%;
-		border: 1px solid rgba(173, 219, 230, 0.34);
-		background: rgba(8, 33, 45, 0.72);
-		color: #ecf9fc;
+		border: 1px solid var(--control-border);
+		background: var(--control-bg-strong);
+		color: var(--control-text);
 		border-radius: 8px;
 		padding: 0.28rem 0.45rem;
 		font-size: 0.8rem;
@@ -1565,9 +1692,9 @@
 	.renderer-buttons button,
 	.debug-buttons button,
 	.debug-time-buttons button {
-		border: 1px solid rgba(169, 215, 225, 0.28);
-		background: rgba(8, 33, 45, 0.66);
-		color: #e2f4f9;
+		border: 1px solid var(--control-border);
+		background: var(--control-bg-strong);
+		color: var(--control-text);
 		padding: 0.28rem 0.6rem;
 		border-radius: 999px;
 		font-size: 0.78rem;
@@ -1644,9 +1771,9 @@
 	}
 
 	.pager button {
-		border: 1px solid rgba(196, 227, 234, 0.3);
+		border: 1px solid var(--control-border);
 		border-radius: 10px;
-		background: rgba(8, 37, 48, 0.5);
+		background: var(--control-bg-strong);
 		color: var(--text-strong);
 		padding: 0.3rem 0.55rem;
 		cursor: pointer;
@@ -1659,10 +1786,10 @@
 	}
 
 	.card {
-		background: rgba(6, 27, 37, 0.75);
+		background: var(--surface);
 		border-radius: 12px;
 		padding: 0.65rem;
-		border: 1px solid rgba(177, 223, 234, 0.2);
+		border: 1px solid var(--control-border);
 	}
 
 	.card p {
@@ -1671,7 +1798,7 @@
 
 	.time {
 		font-size: 0.82rem;
-		color: #9edbe8;
+		color: var(--panel-heading);
 		margin-bottom: 0.2rem;
 	}
 
@@ -1687,12 +1814,12 @@
 
 	.attribution {
 		margin: 0;
-		color: #cde7ef;
+		color: var(--text-soft);
 		font-size: 0.8rem;
 	}
 
 	.attribution a {
-		color: #f2d57f;
+		color: var(--chip-color);
 	}
 
 	.state {
