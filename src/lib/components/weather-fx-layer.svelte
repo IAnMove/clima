@@ -9,16 +9,18 @@
 		windKmh = 0,
 		precipitationProbabilityPercent = 0,
 		renderer = 'canvas2d',
-		active = true
+		active = true,
+		onRendererResolved
 	} = $props<{
 		condition?: WeatherCondition;
 		windKmh?: number | null;
 		precipitationProbabilityPercent?: number | null;
 		renderer?: WeatherRenderer;
 		active?: boolean;
+		onRendererResolved?: (renderer: WeatherRenderer) => void;
 	}>();
 
-	let canvasEl: HTMLCanvasElement | null = null;
+	let canvasEl = $state<HTMLCanvasElement | null>(null);
 	let engine: WeatherFxEngine | null = null;
 	let mounted = false;
 	let resizeObserver: ResizeObserver | null = null;
@@ -84,7 +86,13 @@
 		if (engine && currentRenderer === renderer) {
 			resizeEngine();
 			engine.setInput(toEngineInput());
+			onRendererResolved?.(currentRenderer);
 			return;
+		}
+
+		if (engine && currentRenderer !== renderer) {
+			// Release the previous renderer before switching.
+			destroyEngine();
 		}
 
 		const buildId = ++rendererBuildId;
@@ -94,15 +102,16 @@
 		}
 
 		if (buildId !== rendererBuildId) {
-			created.destroy();
+			created.engine.destroy();
 			return;
 		}
 
 		destroyEngine();
-		engine = created;
-		currentRenderer = renderer;
+		engine = created.engine;
+		currentRenderer = created.resolvedRenderer;
 		resizeEngine();
 		engine.setInput(toEngineInput());
+		onRendererResolved?.(created.resolvedRenderer);
 	}
 
 	function resizeEngine(): void {
@@ -140,9 +149,12 @@
 		targetRenderer: WeatherRenderer,
 		canvas: HTMLCanvasElement,
 		input: WeatherFxInput
-	): Promise<WeatherFxEngine | null> {
+	): Promise<{ engine: WeatherFxEngine; resolvedRenderer: WeatherRenderer } | null> {
 		if (targetRenderer === 'canvas2d') {
-			return new Canvas2DWeatherFxEngine(canvas, input);
+			return {
+				engine: new Canvas2DWeatherFxEngine(canvas, input),
+				resolvedRenderer: 'canvas2d'
+			};
 		}
 
 		try {
@@ -150,10 +162,17 @@
 				import('./weather-fx/pixi-engine'),
 				import('pixi.js')
 			]);
-			return new PixiWeatherFxEngine(PIXI, canvas, input);
-		} catch {
+			return {
+				engine: new PixiWeatherFxEngine(PIXI, canvas, input),
+				resolvedRenderer: 'pixijs'
+			};
+		} catch (error) {
+			console.warn('Pixi renderer unavailable, fallback to Canvas2D', error);
 			// Fallback to Canvas 2D when WebGL / Pixi cannot initialize.
-			return new Canvas2DWeatherFxEngine(canvas, input);
+			return {
+				engine: new Canvas2DWeatherFxEngine(canvas, input),
+				resolvedRenderer: 'canvas2d'
+			};
 		}
 	}
 
@@ -167,7 +186,9 @@
 </script>
 
 <div class="fx-layer" aria-hidden="true">
-	<canvas bind:this={canvasEl} class="fx-canvas"></canvas>
+	{#key renderer}
+		<canvas bind:this={canvasEl} class="fx-canvas"></canvas>
+	{/key}
 </div>
 
 <style>
@@ -185,4 +206,3 @@
 		pointer-events: none;
 	}
 </style>
-

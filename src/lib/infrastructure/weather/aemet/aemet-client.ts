@@ -119,7 +119,7 @@ function repairMojibakeDeep<T>(value: T): T {
 }
 
 function repairPotentialMojibake(input: string): string {
-	if (!/[ÃÂ]/.test(input)) {
+	if (!/[\u00c3\u00c2]/.test(input)) {
 		return input;
 	}
 
@@ -136,6 +136,6 @@ function repairPotentialMojibake(input: string): string {
 }
 
 function mojibakeScore(input: string): number {
-	const matches = input.match(/[ÃÂ�]/g);
+	const matches = input.match(/[\u00c3\u00c2\ufffd]/g);
 	return matches ? matches.length : 0;
 }

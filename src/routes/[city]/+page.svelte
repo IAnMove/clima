@@ -1,21 +1,45 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { onDestroy, onMount } from 'svelte';
 	import WeatherFxLayer from '$lib/components/weather-fx-layer.svelte';
 	import type { WeatherRenderer } from '$lib/components/weather-fx/types';
 	import type { Municipality } from '$lib/domain/municipality';
-	import type { WeatherCondition } from '$lib/domain/weather';
+	import type { WeatherCondition, WeatherImage } from '$lib/domain/weather';
 	import { toSlug } from '$lib/utils/text';
 	import type { PageData } from './$types';
 
 	let { data } = $props<{ data: PageData }>();
 
 	type GenericPayload = Record<string, any>;
+	type FlickrFeedItem = {
+		title?: string;
+		link?: string;
+		author?: string;
+		tags?: string;
+		media?: {
+			m?: string;
+		};
+	};
+	type FlickrFeedResponse = {
+		items?: FlickrFeedItem[];
+	};
 
 	let mode = $state<'photo' | 'minimal' | 'all-info'>('photo');
 	let hourlyPage = $state(0);
 	let dailyPage = $state(0);
 	let forcedCondition = $state<WeatherCondition | null>(null);
 	let selectedRenderer = $state<WeatherRenderer>('canvas2d');
+	let resolvedRenderer = $state<WeatherRenderer>('canvas2d');
+	let debugPrecipitationPercent = $state(0);
+	let debugPrecipitationSeed = $state('');
+	let imageMenuOpen = $state(false);
+	let customImage = $state<WeatherImage | null>(null);
+	let imageMenuError = $state<string | null>(null);
+	let loadingRandomImage = $state(false);
+	let customObjectUrl = $state<string | null>(null);
+	let imageSeed = $state('');
+	let now = $state(new Date());
+	let debugTimeOffsetMinutes = $state(0);
 	let selectedProvince = $state('');
 	let provinceMunicipalities = $state<Municipality[]>([]);
 	let loadingProvinceMunicipalities = $state(false);
@@ -49,6 +73,9 @@
 		isDebugMode ? (forcedCondition ?? weatherCondition) : weatherCondition
 	);
 	const activeRenderer = $derived<WeatherRenderer>(isDebugMode ? selectedRenderer : 'canvas2d');
+	const isRendererFallback = $derived(
+		isDebugMode && activeRenderer === 'pixijs' && resolvedRenderer === 'canvas2d'
+	);
 	const currentWindKmh = $derived(
 		typeof report?.current?.windKmh === 'number' && Number.isFinite(report.current.windKmh)
 			? report.current.windKmh
@@ -57,8 +84,16 @@
 	const currentPrecipitationProbability = $derived(
 		typeof report?.current?.precipitationProbabilityPercent === 'number' &&
 			Number.isFinite(report.current.precipitationProbabilityPercent)
-			? report.current.precipitationProbabilityPercent
-			: 0
+				? report.current.precipitationProbabilityPercent
+				: 0
+	);
+	const activePrecipitationProbability = $derived(
+		isDebugMode
+			? clampPercent(debugPrecipitationPercent)
+			: clampPercent(currentPrecipitationProbability)
+	);
+	const precipitationLevelLabel = $derived(
+		resolvePrecipitationLevelLabel(activeWeatherCondition, activePrecipitationProbability)
 	);
 
 	const hourlyChunks = $derived(chunk(hourly, 12));
@@ -66,6 +101,34 @@
 	const visibleHourly = $derived(hourlyChunks[hourlyPage] ?? []);
 	const visibleDaily = $derived(dailyChunks[dailyPage] ?? []);
 	const compactMode = $derived(mode !== 'all-info');
+	const serverImage = $derived((report?.backgroundImage as WeatherImage | null) ?? null);
+	const activeImage = $derived(customImage ?? serverImage);
+	const activeClock = $derived(
+		isDebugMode
+			? new Date(now.getTime() + clampDebugTimeOffset(debugTimeOffsetMinutes) * 60_000)
+			: now
+	);
+	const currentHourDecimal = $derived(activeClock.getHours() + activeClock.getMinutes() / 60);
+	const isDaytime = $derived(currentHourDecimal >= 6 && currentHourDecimal < 18);
+	const celestialProgress = $derived(resolveCelestialProgress(currentHourDecimal, isDaytime));
+	const celestialXPercent = $derived(8 + 84 * celestialProgress);
+	const celestialYPercent = $derived(68 - Math.sin(Math.PI * celestialProgress) * 46);
+	const celestialStyle = $derived(
+		`left:${celestialXPercent.toFixed(2)}%; top:${celestialYPercent.toFixed(2)}%;`
+	);
+	const debugClockLabel = $derived(formatClockLabel(activeClock));
+	const debugOffsetLabel = $derived(formatOffsetLabel(clampDebugTimeOffset(debugTimeOffsetMinutes)));
+	const clampedDebugOffsetMinutes = $derived(clampDebugTimeOffset(debugTimeOffsetMinutes));
+
+	onMount(() => {
+		const timer = window.setInterval(() => {
+			now = new Date();
+		}, 1_000);
+
+		return () => {
+			window.clearInterval(timer);
+		};
+	});
 
 	$effect(() => {
 		const maxHourlyPage = Math.max(0, hourlyChunks.length - 1);
@@ -85,9 +148,46 @@
 		selectedProvince = data.province;
 		provinceMunicipalities = [];
 		provinceMunicipalityError = null;
+		imageMenuOpen = false;
 		if (!isDebugMode) {
 			selectedRenderer = 'canvas2d';
+			resolvedRenderer = 'canvas2d';
+			debugPrecipitationPercent = clampPercent(currentPrecipitationProbability);
+			debugPrecipitationSeed = '';
+			debugTimeOffsetMinutes = 0;
 		}
+	});
+
+	$effect(() => {
+		const nextSeed = String(report?.location?.code ?? data.citySlug ?? '');
+		if (!nextSeed || nextSeed === imageSeed) {
+			return;
+		}
+
+		imageSeed = nextSeed;
+		imageMenuOpen = false;
+		revokeCustomObjectUrl();
+		customImage = null;
+		imageMenuError = null;
+		loadingRandomImage = false;
+	});
+
+	onDestroy(() => {
+		revokeCustomObjectUrl();
+	});
+
+	$effect(() => {
+		if (!isDebugMode) {
+			return;
+		}
+
+		const seed = String(report?.location?.code ?? data.citySlug ?? '');
+		if (!seed || seed === debugPrecipitationSeed) {
+			return;
+		}
+
+		debugPrecipitationPercent = clampPercent(currentPrecipitationProbability);
+		debugPrecipitationSeed = seed;
 	});
 
 	function chunk<T>(items: T[], size: number): T[][] {
@@ -113,11 +213,28 @@
 			: 'unknown';
 	}
 
+	function resolvePrecipitationLevelLabel(
+		condition: WeatherCondition,
+		precipitationProbabilityPercent: number
+	): 'baja' | 'media' | 'alta' | 'sin precipitacion' {
+		if (condition !== 'rain' && condition !== 'snow' && condition !== 'storm') {
+			return 'sin precipitacion';
+		}
+
+		if (precipitationProbabilityPercent < 30) {
+			return 'baja';
+		}
+		if (precipitationProbabilityPercent < 70) {
+			return 'media';
+		}
+		return 'alta';
+	}
+
 	function formatTemp(value: unknown): string {
 		if (typeof value !== 'number' || Number.isNaN(value)) {
 			return '--';
 		}
-		return `${Math.round(value)}°`;
+		return `${Math.round(value)}\u00b0`;
 	}
 
 	function formatPercent(value: unknown): string {
@@ -132,6 +249,265 @@
 			return '--';
 		}
 		return `${Math.round(value)} km/h`;
+	}
+
+	function clampPercent(value: number): number {
+		if (!Number.isFinite(value)) {
+			return 0;
+		}
+
+		return Math.min(100, Math.max(0, Math.round(value)));
+	}
+
+	function clampDebugTimeOffset(value: number): number {
+		if (!Number.isFinite(value)) {
+			return 0;
+		}
+
+		return Math.min(10_080, Math.max(-10_080, Math.round(value)));
+	}
+
+	function resolveCelestialProgress(hourDecimal: number, daylight: boolean): number {
+		const safeHour = Number.isFinite(hourDecimal) ? hourDecimal : 12;
+		if (daylight) {
+			return clampUnit((safeHour - 6) / 12);
+		}
+
+		const wrappedHour = safeHour >= 18 ? safeHour : safeHour + 24;
+		return clampUnit((wrappedHour - 18) / 12);
+	}
+
+	function clampUnit(value: number): number {
+		return Math.min(1, Math.max(0, value));
+	}
+
+	function onDebugPrecipitationInput(event: Event): void {
+		const target = event.currentTarget as HTMLInputElement | null;
+		if (!target) {
+			return;
+		}
+
+		debugPrecipitationPercent = clampPercent(Number(target.value));
+	}
+
+	function onDebugTimeOffsetInput(event: Event): void {
+		const target = event.currentTarget as HTMLInputElement | null;
+		if (!target) {
+			return;
+		}
+
+		debugTimeOffsetMinutes = clampDebugTimeOffset(Number(target.value));
+	}
+
+	function shiftDebugTimeOffset(minutesDelta: number): void {
+		debugTimeOffsetMinutes = clampDebugTimeOffset(debugTimeOffsetMinutes + minutesDelta);
+	}
+
+	function formatClockLabel(value: Date): string {
+		const hours = String(value.getHours()).padStart(2, '0');
+		const minutes = String(value.getMinutes()).padStart(2, '0');
+		return `${hours}:${minutes}`;
+	}
+
+	function formatOffsetLabel(offsetMinutes: number): string {
+		if (offsetMinutes === 0) {
+			return 'sin desfase';
+		}
+
+		const sign = offsetMinutes > 0 ? '+' : '-';
+		const absOffset = Math.abs(offsetMinutes);
+		const hours = Math.floor(absOffset / 60);
+		const minutes = absOffset % 60;
+		return `${sign}${hours}h ${String(minutes).padStart(2, '0')}m`;
+	}
+
+	function toggleImageMenu(): void {
+		imageMenuOpen = !imageMenuOpen;
+		if (imageMenuOpen) {
+			imageMenuError = null;
+		}
+	}
+
+	async function applyRandomImage(): Promise<void> {
+		if (loadingRandomImage) {
+			return;
+		}
+
+		const cityName = String(report?.location?.name ?? municipality?.name ?? data.citySlug ?? '').trim();
+		if (!cityName) {
+			imageMenuError = 'No hay ciudad para buscar imagen';
+			return;
+		}
+
+		loadingRandomImage = true;
+		imageMenuError = null;
+
+		try {
+			const provinceName = String(report?.location?.province ?? municipality?.province ?? '').trim();
+			const currentUrl = activeImage?.url ?? '';
+			const flickrCandidates = await fetchFlickrCityImages(cityName, provinceName || null);
+			const fallbackCandidates = buildCityScopedFallbackCandidates(cityName, provinceName || null);
+			const candidates = dedupeImages([...flickrCandidates, ...fallbackCandidates]).filter(
+				(item) => item.url !== currentUrl
+			);
+
+			if (!candidates.length) {
+				imageMenuError = 'No encontre otra imagen de esta ciudad ahora';
+				return;
+			}
+
+			revokeCustomObjectUrl();
+			customImage = candidates[Math.floor(Math.random() * candidates.length)];
+			imageMenuOpen = false;
+		} catch {
+			imageMenuError = 'No se pudo cargar otra imagen de esta ciudad';
+		} finally {
+			loadingRandomImage = false;
+		}
+	}
+
+	function onCustomImageFileChange(event: Event): void {
+		const target = event.currentTarget as HTMLInputElement | null;
+		if (!target) {
+			return;
+		}
+
+		const file = target.files?.[0];
+		target.value = '';
+
+		if (!file) {
+			return;
+		}
+
+		if (!file.type.startsWith('image/')) {
+			imageMenuError = 'El archivo debe ser una imagen';
+			return;
+		}
+
+		revokeCustomObjectUrl();
+		const objectUrl = URL.createObjectURL(file);
+		customObjectUrl = objectUrl;
+		customImage = {
+			url: objectUrl,
+			attributionText: `Archivo local - ${file.name}`,
+			attributionUrl: null
+		};
+		imageMenuError = null;
+		imageMenuOpen = false;
+	}
+
+	function restoreServerImage(): void {
+		revokeCustomObjectUrl();
+		customImage = null;
+		imageMenuError = null;
+		imageMenuOpen = false;
+	}
+
+	function buildCityScopedFallbackCandidates(cityName: string, provinceName: string | null): WeatherImage[] {
+		const query = `${cityName} ${provinceName ?? ''} city landscape`.trim();
+		const nonce = `${Date.now()}-${Math.floor(Math.random() * 100_000)}`;
+
+		return [
+			{
+				url: `https://source.unsplash.com/1920x1080/?${encodeURIComponent(query)}&sig=${encodeURIComponent(nonce)}`,
+				attributionText: `Aleatoria de ${cityName} · Unsplash Source`,
+				attributionUrl: 'https://source.unsplash.com'
+			},
+			{
+				url: `https://loremflickr.com/1920/1080/${encodeURIComponent(
+					`${cityName},${provinceName ?? ''},city,landscape`
+				)}?lock=${encodeURIComponent(nonce)}`,
+				attributionText: `Aleatoria de ${cityName} · LoremFlickr`,
+				attributionUrl: 'https://loremflickr.com'
+			}
+		];
+	}
+
+	async function fetchFlickrCityImages(cityName: string, provinceName: string | null): Promise<WeatherImage[]> {
+		const queryVariants = [
+			`${cityName} ${provinceName ?? ''} city landscape`,
+			`${cityName} skyline`,
+			`${cityName} old town`
+		];
+
+		const results: WeatherImage[] = [];
+		for (const query of queryVariants) {
+			const tags = query
+				.toLowerCase()
+				.split(/\s+/)
+				.map((word) => word.trim())
+				.filter((word) => word.length >= 2)
+				.slice(0, 8)
+				.join(',');
+
+			if (!tags) {
+				continue;
+			}
+
+			const url = `https://www.flickr.com/services/feeds/photos_public.gne?format=json&nojsoncallback=1&lang=en-us&tagmode=all&tags=${encodeURIComponent(tags)}`;
+			try {
+				const response = await fetch(url);
+				if (!response.ok) {
+					continue;
+				}
+
+				const payload = (await response.json()) as FlickrFeedResponse;
+				const items = Array.isArray(payload.items) ? payload.items : [];
+				for (const item of items) {
+					const imageUrl = item.media?.m?.trim();
+					if (!imageUrl) {
+						continue;
+					}
+
+					const metadata = `${item.title ?? ''} ${item.tags ?? ''}`.toLowerCase();
+					if (
+						metadata.includes('logo') ||
+						metadata.includes('escudo') ||
+						metadata.includes('bandera') ||
+						metadata.includes('flag') ||
+						metadata.includes('map')
+					) {
+						continue;
+					}
+
+					results.push({
+						url: imageUrl.replace(/_m\.(jpg|jpeg|png)$/i, '_z.$1'),
+						attributionText: [item.title, 'Flickr'].filter(Boolean).join(' · '),
+						attributionUrl: item.link ?? null
+					});
+				}
+			} catch {
+				continue;
+			}
+		}
+
+		return dedupeImages(results);
+	}
+
+	function dedupeImages(images: WeatherImage[]): WeatherImage[] {
+		const seen = new Set<string>();
+		const deduped: WeatherImage[] = [];
+		for (const item of images) {
+			if (!item.url || seen.has(item.url)) {
+				continue;
+			}
+			seen.add(item.url);
+			deduped.push(item);
+		}
+		return deduped;
+	}
+
+	function revokeCustomObjectUrl(): void {
+		if (!customObjectUrl) {
+			return;
+		}
+
+		URL.revokeObjectURL(customObjectUrl);
+		customObjectUrl = null;
+	}
+
+	function toBackgroundImageCss(url: string): string {
+		return url.replace(/'/g, '%27').replace(/\(/g, '%28').replace(/\)/g, '%29');
 	}
 
 	function formatDate(isoDate: unknown): string {
@@ -215,18 +591,144 @@
 <main class="page">
 	{#if status === 'ok' && report}
 		<div class={`scene mode-${mode} condition-${activeWeatherCondition} ${compactMode ? 'compact' : ''}`}>
-			{#if mode === 'photo' && report.backgroundImage?.url}
-				<div class="photo" style={`background-image:url('${report.backgroundImage.url}')`}></div>
+			{#if mode === 'photo' && activeImage?.url}
+				<div class="photo" style={`background-image:url('${toBackgroundImageCss(activeImage.url)}')`}></div>
 			{/if}
 
 			<div class="gradient"></div>
+			{#if mode === 'minimal'}
+				<div class={`minimal-city-layer ${isDaytime ? 'day' : 'night'}`}>
+					<div
+						class={`celestial-body ${isDaytime ? 'sun' : 'moon'}`}
+						style={celestialStyle}
+						aria-hidden="true"
+					></div>
+					<svg class="minimal-city-svg" viewBox="0 0 1600 900" preserveAspectRatio="none" aria-hidden="true">
+						<defs>
+							<linearGradient id="city-backdrop" x1="0" y1="0" x2="0" y2="1">
+								<stop offset="0%" stop-color="rgba(152, 214, 233, 0.2)" />
+								<stop offset="100%" stop-color="rgba(15, 34, 48, 0.02)" />
+							</linearGradient>
+							<linearGradient id="skyline-back-fill" x1="0" y1="0" x2="0" y2="1">
+								<stop offset="0%" stop-color="rgba(52, 96, 123, 0.56)" />
+								<stop offset="100%" stop-color="rgba(27, 59, 80, 0.72)" />
+							</linearGradient>
+							<linearGradient id="skyline-mid-fill" x1="0" y1="0" x2="0" y2="1">
+								<stop offset="0%" stop-color="rgba(33, 74, 99, 0.72)" />
+								<stop offset="100%" stop-color="rgba(16, 46, 66, 0.84)" />
+							</linearGradient>
+							<linearGradient id="skyline-front-fill" x1="0" y1="0" x2="0" y2="1">
+								<stop offset="0%" stop-color="rgba(17, 48, 68, 0.94)" />
+								<stop offset="100%" stop-color="rgba(8, 28, 42, 0.98)" />
+							</linearGradient>
+							<linearGradient id="city-ground-fill" x1="0" y1="0" x2="0" y2="1">
+								<stop offset="0%" stop-color="rgba(10, 37, 53, 0.84)" />
+								<stop offset="100%" stop-color="rgba(4, 21, 32, 1)" />
+							</linearGradient>
+						</defs>
+						<rect x="0" y="0" width="1600" height="900" fill="url(#city-backdrop)" />
+						<ellipse class="city-haze" cx="800" cy="695" rx="760" ry="142"></ellipse>
+
+						<g class="skyline skyline-back">
+							<path
+								class="skyline-fill-back"
+								d="M0 675 L48 675 L48 612 L98 612 L98 675 L156 675 L156 544 L190 544 L206 518 L222 544 L262 544 L262 675 L324 675 L324 585 L372 585 L372 675 L430 675 L430 520 L472 520 L472 675 L548 675 L548 560 L588 560 L606 534 L624 560 L672 560 L672 675 L740 675 L740 598 L798 598 L798 675 L872 675 L872 540 L918 540 L918 675 L994 675 L994 575 L1042 575 L1042 675 L1116 675 L1116 548 L1154 548 L1174 508 L1194 548 L1246 548 L1246 675 L1320 675 L1320 594 L1378 594 L1378 675 L1450 675 L1450 534 L1496 534 L1496 675 L1600 675 L1600 900 L0 900 Z"
+							></path>
+							<path
+								class="skyline-ridge skyline-ridge-back"
+								d="M0 675 L48 675 L48 612 L98 612 L98 675 L156 675 L156 544 L190 544 L206 518 L222 544 L262 544 L262 675 L324 675 L324 585 L372 585 L372 675 L430 675 L430 520 L472 520 L472 675 L548 675 L548 560 L588 560 L606 534 L624 560 L672 560 L672 675 L740 675 L740 598 L798 598 L798 675 L872 675 L872 540 L918 540 L918 675 L994 675 L994 575 L1042 575 L1042 675 L1116 675 L1116 548 L1154 548 L1174 508 L1194 548 L1246 548 L1246 675 L1320 675 L1320 594 L1378 594 L1378 675 L1450 675 L1450 534 L1496 534 L1496 675 L1600 675"
+							></path>
+						</g>
+
+						<g class="skyline skyline-mid">
+							<path
+								class="skyline-fill-mid"
+								d="M0 760 L70 760 L70 646 L124 646 L124 760 L186 760 L186 606 L254 606 L254 760 L332 760 L332 636 L384 636 L384 760 L468 760 L468 590 L522 590 L522 760 L602 760 L602 624 L660 624 L660 760 L742 760 L742 566 L798 566 L798 760 L876 760 L876 622 L936 622 L936 760 L1012 760 L1012 586 L1070 586 L1070 760 L1148 760 L1148 630 L1212 630 L1212 760 L1286 760 L1286 596 L1348 596 L1348 760 L1424 760 L1424 642 L1488 642 L1488 760 L1600 760 L1600 900 L0 900 Z"
+							></path>
+							<path
+								class="skyline-ridge skyline-ridge-mid"
+								d="M0 760 L70 760 L70 646 L124 646 L124 760 L186 760 L186 606 L254 606 L254 760 L332 760 L332 636 L384 636 L384 760 L468 760 L468 590 L522 590 L522 760 L602 760 L602 624 L660 624 L660 760 L742 760 L742 566 L798 566 L798 760 L876 760 L876 622 L936 622 L936 760 L1012 760 L1012 586 L1070 586 L1070 760 L1148 760 L1148 630 L1212 630 L1212 760 L1286 760 L1286 596 L1348 596 L1348 760 L1424 760 L1424 642 L1488 642 L1488 760 L1600 760"
+							></path>
+							<rect class="skyline-facade skyline-facade-mid" x="220" y="628" width="28" height="132"></rect>
+							<rect class="skyline-facade skyline-facade-mid" x="492" y="610" width="22" height="150"></rect>
+							<rect class="skyline-facade skyline-facade-mid" x="764" y="588" width="24" height="172"></rect>
+							<rect class="skyline-facade skyline-facade-mid" x="1038" y="602" width="26" height="158"></rect>
+							<rect class="skyline-facade skyline-facade-mid" x="1316" y="618" width="24" height="142"></rect>
+						</g>
+
+						<g class="skyline skyline-front">
+							<path
+								class="skyline-fill-front"
+								d="M0 900 L0 835 L84 835 L84 728 L146 728 L146 835 L230 835 L230 690 L300 690 L300 835 L384 835 L384 702 L440 702 L470 668 L500 702 L560 702 L560 835 L644 835 L644 648 L724 648 L724 835 L806 835 L806 712 L868 712 L868 835 L956 835 L956 666 L1032 666 L1032 835 L1118 835 L1118 718 L1186 718 L1186 835 L1274 835 L1274 680 L1352 680 L1352 835 L1442 835 L1442 736 L1512 736 L1512 835 L1600 835 L1600 900 Z"
+							></path>
+							<path
+								class="skyline-ridge skyline-ridge-front"
+								d="M0 835 L84 835 L84 728 L146 728 L146 835 L230 835 L230 690 L300 690 L300 835 L384 835 L384 702 L440 702 L470 668 L500 702 L560 702 L560 835 L644 835 L644 648 L724 648 L724 835 L806 835 L806 712 L868 712 L868 835 L956 835 L956 666 L1032 666 L1032 835 L1118 835 L1118 718 L1186 718 L1186 835 L1274 835 L1274 680 L1352 680 L1352 835 L1442 835 L1442 736 L1512 736 L1512 835 L1600 835"
+							></path>
+							<path
+								class="skyline-facade skyline-facade-front"
+								d="M938 835 L938 642 L968 642 L968 614 L982 590 L996 614 L996 642 L1026 642 L1026 835 Z"
+							></path>
+							<path
+								class="skyline-facade skyline-facade-front"
+								d="M658 835 L658 662 L678 662 L678 632 L694 612 L710 632 L710 662 L730 662 L730 835 Z"
+							></path>
+						</g>
+
+						<path class="skyline-waterline" d="M0 760 C230 742 420 782 650 766 C885 748 1060 784 1290 770 C1410 762 1514 762 1600 772 L1600 820 L0 820 Z"></path>
+						<rect class="skyline-ground" x="0" y="790" width="1600" height="110"></rect>
+						<path class="skyline-road" d="M0 815 C220 802 456 832 688 818 C986 798 1276 832 1600 816 L1600 900 L0 900 Z"></path>
+
+						<g class="skyline-windows skyline-windows-back">
+							<rect class="skyline-window" x="176" y="574" width="8" height="10"></rect>
+							<rect class="skyline-window" x="342" y="612" width="7" height="9"></rect>
+							<rect class="skyline-window" x="438" y="552" width="8" height="10"></rect>
+							<rect class="skyline-window" x="582" y="596" width="7" height="9"></rect>
+							<rect class="skyline-window" x="748" y="620" width="8" height="10"></rect>
+							<rect class="skyline-window" x="896" y="572" width="8" height="10"></rect>
+							<rect class="skyline-window" x="1030" y="608" width="7" height="9"></rect>
+							<rect class="skyline-window" x="1162" y="566" width="8" height="10"></rect>
+							<rect class="skyline-window" x="1332" y="626" width="7" height="9"></rect>
+							<rect class="skyline-window" x="1468" y="566" width="8" height="10"></rect>
+						</g>
+
+						<g class="skyline-windows skyline-windows-mid">
+							<rect class="skyline-window" x="92" y="696" width="8" height="10"></rect>
+							<rect class="skyline-window" x="220" y="672" width="8" height="10"></rect>
+							<rect class="skyline-window" x="342" y="686" width="8" height="10"></rect>
+							<rect class="skyline-window" x="494" y="660" width="8" height="10"></rect>
+							<rect class="skyline-window" x="618" y="688" width="8" height="10"></rect>
+							<rect class="skyline-window" x="766" y="646" width="8" height="10"></rect>
+							<rect class="skyline-window" x="892" y="684" width="8" height="10"></rect>
+							<rect class="skyline-window" x="1038" y="664" width="8" height="10"></rect>
+							<rect class="skyline-window" x="1168" y="692" width="8" height="10"></rect>
+							<rect class="skyline-window" x="1318" y="662" width="8" height="10"></rect>
+							<rect class="skyline-window" x="1454" y="698" width="8" height="10"></rect>
+						</g>
+
+						<g class="skyline-windows skyline-windows-front">
+							<rect class="skyline-window" x="102" y="776" width="9" height="12"></rect>
+							<rect class="skyline-window" x="248" y="744" width="9" height="12"></rect>
+							<rect class="skyline-window" x="408" y="756" width="9" height="12"></rect>
+							<rect class="skyline-window" x="518" y="742" width="9" height="12"></rect>
+							<rect class="skyline-window" x="676" y="726" width="9" height="12"></rect>
+							<rect class="skyline-window" x="832" y="764" width="9" height="12"></rect>
+							<rect class="skyline-window" x="982" y="718" width="9" height="12"></rect>
+							<rect class="skyline-window" x="1142" y="770" width="9" height="12"></rect>
+							<rect class="skyline-window" x="1306" y="734" width="9" height="12"></rect>
+							<rect class="skyline-window" x="1462" y="776" width="9" height="12"></rect>
+						</g>
+					</svg>
+				</div>
+			{/if}
 			<div class="fx-host">
 				<WeatherFxLayer
 					condition={activeWeatherCondition}
 					windKmh={currentWindKmh}
-					precipitationProbabilityPercent={currentPrecipitationProbability}
+					precipitationProbabilityPercent={activePrecipitationProbability}
 					renderer={activeRenderer}
 					active={mode !== 'all-info'}
+					onRendererResolved={(resolved) => (resolvedRenderer = resolved)}
 				/>
 			</div>
 
@@ -236,7 +738,7 @@
 						<p class="chip">Fuente: {payload.provider?.toUpperCase() ?? 'API'}</p>
 						<h1>{report.location?.name ?? municipality?.name ?? 'Ciudad'}</h1>
 						<p class="subtitle">
-							{report.location?.province ?? municipality?.province ?? 'España'} · código
+							{report.location?.province ?? municipality?.province ?? 'Espa\u00f1a'} &middot; c&oacute;digo
 							{report.location?.code ?? municipality?.code}
 						</p>
 					</div>
@@ -262,6 +764,41 @@
 							</button>
 						</div>
 
+						{#if mode === 'photo'}
+							<div class="image-menu-wrap">
+								<button class="image-menu-toggle" type="button" onclick={toggleImageMenu}>
+									Cambiar imagen
+								</button>
+								{#if imageMenuOpen}
+									<div class="image-menu">
+										<button
+											type="button"
+											class="image-menu-action"
+											onclick={() => void applyRandomImage()}
+											disabled={loadingRandomImage}
+										>
+											{loadingRandomImage ? 'Buscando...' : 'Aleatoria de esta ciudad'}
+										</button>
+										<div class="image-menu-file">
+											<label for="local-image-input">Imagen local (sin subir al server)</label>
+											<input
+												id="local-image-input"
+												type="file"
+												accept="image/*"
+												onchange={onCustomImageFileChange}
+											/>
+										</div>
+										<button type="button" class="image-menu-reset" onclick={restoreServerImage}>
+											Volver a original
+										</button>
+										{#if imageMenuError}
+											<p class="image-menu-error">{imageMenuError}</p>
+										{/if}
+									</div>
+								{/if}
+							</div>
+						{/if}
+
 						{#if isDebugMode}
 							<section class="debug-panel">
 								<p class="debug-title">Debug clima</p>
@@ -277,7 +814,13 @@
 										</button>
 									{/each}
 								</div>
-								<p class="debug-label">Condicion</p>
+								<p class="debug-info">
+									Activo: <strong>{resolvedRenderer}</strong>
+									{#if isRendererFallback}
+										<span>(fallback por incompatibilidad WebGL/Pixi)</span>
+									{/if}
+								</p>
+								<p class="debug-label">Condici&oacute;n</p>
 								<div class="debug-buttons">
 									{#each availableConditions as condition}
 										<button
@@ -289,6 +832,56 @@
 										</button>
 									{/each}
 								</div>
+								<div class="debug-precipitation">
+									<div class="debug-precipitation-head">
+										<p class="debug-label">% precipitaci&oacute;n</p>
+										<strong>{activePrecipitationProbability}%</strong>
+									</div>
+									<input
+										class="debug-precipitation-range"
+										type="range"
+										min="0"
+										max="100"
+										step="1"
+										value={activePrecipitationProbability}
+										oninput={onDebugPrecipitationInput}
+									/>
+									<input
+										class="debug-precipitation-number"
+										type="number"
+										min="0"
+										max="100"
+										step="1"
+										value={activePrecipitationProbability}
+										oninput={onDebugPrecipitationInput}
+									/>
+								</div>
+								<div class="debug-time">
+									<div class="debug-time-head">
+										<p class="debug-label">Reloj minimal</p>
+										<strong>{debugClockLabel}</strong>
+									</div>
+									<p class="debug-time-info">
+										Real: {formatClockLabel(now)} &middot; offset: {debugOffsetLabel}
+									</p>
+									<input
+										class="debug-time-number"
+										type="number"
+										min="-10080"
+										max="10080"
+										step="1"
+										value={clampedDebugOffsetMinutes}
+										oninput={onDebugTimeOffsetInput}
+										aria-label="Offset en minutos para sol y luna"
+									/>
+									<div class="debug-time-buttons">
+										<button type="button" onclick={() => shiftDebugTimeOffset(-60)}>-60m</button>
+										<button type="button" onclick={() => shiftDebugTimeOffset(-15)}>-15m</button>
+										<button type="button" onclick={() => shiftDebugTimeOffset(15)}>+15m</button>
+										<button type="button" onclick={() => shiftDebugTimeOffset(60)}>+60m</button>
+										<button type="button" onclick={() => (debugTimeOffsetMinutes = 0)}>Ahora</button>
+									</div>
+								</div>
 							</section>
 						{/if}
 					</div>
@@ -297,8 +890,9 @@
 				<section class="current">
 					<div class="big-temp">{formatTemp(report.current?.temperatureC)}</div>
 					<div class="meta">
-						<p class="summary">{report.current?.description ?? 'Sin descripción'}</p>
-						<p>Precipitación: {formatPercent(report.current?.precipitationProbabilityPercent)}</p>
+						<p class="summary">{report.current?.description ?? 'Sin descripci\u00f3n'}</p>
+						<p>Precipitaci&oacute;n: {formatPercent(activePrecipitationProbability)}</p>
+						<p>Intensidad precipitaci&oacute;n: {precipitationLevelLabel}</p>
 						<p>Humedad: {formatPercent(report.current?.humidityPercent)}</p>
 						<p>Viento: {formatWind(report.current?.windKmh)}</p>
 					</div>
@@ -340,7 +934,7 @@
 
 					<section class="panel">
 					<div class="panel-header">
-						<h2>Próximos días</h2>
+						<h2>Pr&oacute;ximos d&iacute;as</h2>
 						<div class="pager">
 							<button type="button" onclick={() => (dailyPage = Math.max(0, dailyPage - 1))}>
 								Anterior
@@ -369,12 +963,12 @@
 					</section>
 				{/if}
 
-				{#if mode === 'photo' && report.backgroundImage?.attributionText}
+				{#if mode === 'photo' && activeImage?.attributionText}
 					<p class="attribution">
-						Imagen: {report.backgroundImage.attributionText}
-						{#if report.backgroundImage.attributionUrl}
-							·
-							<a href={report.backgroundImage.attributionUrl} target="_blank" rel="noreferrer">fuente</a>
+						Imagen: {activeImage.attributionText}
+						{#if activeImage.attributionUrl}
+							&middot;
+							<a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente</a>
 						{/if}
 					</p>
 				{/if}
@@ -414,7 +1008,7 @@
 					{#each payload.provinceSuggestions as provinceSuggestion}
 						<article class="province-card">
 							<p class="province-title">
-								{provinceSuggestion.province} · {provinceSuggestion.totalMunicipalities} municipios
+								{provinceSuggestion.province} &middot; {provinceSuggestion.totalMunicipalities} municipios
 							</p>
 							<div class="mini-list">
 								{#each provinceSuggestion.municipalities as municipalityItem}
@@ -461,7 +1055,7 @@
 	{:else}
 		<section class="state">
 			<h1>Error cargando el clima</h1>
-			<p>{payload.message ?? 'No se pudo obtener la información meteorológica.'}</p>
+			<p>{payload.message ?? 'No se pudo obtener la informaci\u00f3n meteorol\u00f3gica.'}</p>
 		</section>
 	{/if}
 </main>
@@ -485,6 +1079,7 @@
 
 	.photo,
 	.gradient,
+	.minimal-city-layer,
 	.fx-host {
 		position: absolute;
 		inset: 0;
@@ -492,10 +1087,11 @@
 
 	.fx-host {
 		pointer-events: none;
-		z-index: 0;
+		z-index: 3;
 	}
 
 	.photo {
+		z-index: 0;
 		background-size: cover;
 		background-position: center;
 		background-repeat: no-repeat;
@@ -503,6 +1099,7 @@
 	}
 
 	.gradient {
+		z-index: 1;
 		background:
 			radial-gradient(circle at 20% 0%, rgba(255, 219, 145, 0.42), transparent 40%),
 			linear-gradient(
@@ -511,6 +1108,140 @@
 				rgba(6, 21, 30, 0.75) 56%,
 				rgba(5, 18, 26, 0.96) 100%
 			);
+	}
+
+	.minimal-city-layer {
+		z-index: 2;
+		pointer-events: none;
+	}
+
+	.minimal-city-svg {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+	}
+
+	.celestial-body {
+		position: absolute;
+		width: clamp(34px, 4vw, 62px);
+		aspect-ratio: 1 / 1;
+		transform: translate(-50%, -50%);
+		border-radius: 999px;
+	}
+
+	.celestial-body.sun {
+		background: radial-gradient(circle at 35% 30%, #fffbe5 0%, #ffd478 45%, #f59d32 100%);
+		box-shadow:
+			0 0 22px rgba(255, 208, 128, 0.8),
+			0 0 65px rgba(255, 184, 102, 0.42);
+	}
+
+	.celestial-body.moon {
+		background: radial-gradient(circle at 35% 28%, #fefefe 0%, #dbe6f2 50%, #aabed0 100%);
+		box-shadow:
+			0 0 20px rgba(201, 220, 238, 0.66),
+			0 0 58px rgba(157, 191, 221, 0.32);
+	}
+
+	.celestial-body.moon::after {
+		content: '';
+		position: absolute;
+		inset: 10% 0 0 28%;
+		background: rgba(8, 28, 40, 0.6);
+		border-radius: 999px;
+	}
+
+	.mode-minimal .minimal-city-layer.day .skyline-window {
+		opacity: 0.16;
+	}
+
+	.mode-minimal .minimal-city-layer.night .skyline-window {
+		opacity: 0.72;
+	}
+
+	.skyline {
+		vector-effect: non-scaling-stroke;
+	}
+
+	.city-haze {
+		fill: rgba(173, 226, 240, 0.24);
+		filter: blur(16px);
+	}
+
+	.skyline-fill-back {
+		fill: url(#skyline-back-fill);
+	}
+
+	.skyline-fill-mid {
+		fill: url(#skyline-mid-fill);
+	}
+
+	.skyline-fill-front {
+		fill: url(#skyline-front-fill);
+	}
+
+	.skyline-ridge {
+		fill: none;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+		vector-effect: non-scaling-stroke;
+	}
+
+	.skyline-ridge-back {
+		stroke: rgba(181, 219, 231, 0.2);
+		stroke-width: 1.6px;
+	}
+
+	.skyline-ridge-mid {
+		stroke: rgba(167, 212, 226, 0.24);
+		stroke-width: 1.8px;
+	}
+
+	.skyline-ridge-front {
+		stroke: rgba(193, 233, 241, 0.16);
+		stroke-width: 2px;
+	}
+
+	.skyline-facade {
+		fill: rgba(10, 38, 56, 0.5);
+	}
+
+	.skyline-facade-mid {
+		opacity: 0.5;
+	}
+
+	.skyline-facade-front {
+		fill: rgba(7, 26, 39, 0.82);
+	}
+
+	.skyline-ground {
+		fill: url(#city-ground-fill);
+	}
+
+	.skyline-waterline {
+		fill: rgba(73, 155, 180, 0.11);
+		filter: blur(1px);
+	}
+
+	.skyline-road {
+		fill: rgba(4, 19, 29, 0.7);
+	}
+
+	.skyline-windows-back .skyline-window {
+		opacity: 0.35;
+	}
+
+	.skyline-windows-mid .skyline-window {
+		opacity: 0.5;
+	}
+
+	.skyline-windows-front .skyline-window {
+		opacity: 0.64;
+	}
+
+	.skyline-window {
+		fill: rgba(255, 226, 154, 0.75);
 	}
 
 	.mode-minimal .photo {
@@ -541,7 +1272,7 @@
 
 	.content {
 		position: relative;
-		z-index: 1;
+		z-index: 4;
 		padding: clamp(1rem, 2.5vw, 1.5rem);
 		color: var(--text-strong);
 		display: grid;
@@ -628,6 +1359,77 @@
 		font-weight: 700;
 	}
 
+	.image-menu-wrap {
+		position: relative;
+	}
+
+	.image-menu-toggle {
+		border: 1px solid rgba(192, 226, 234, 0.42);
+		background: rgba(7, 28, 40, 0.68);
+		color: #e6f8fc;
+		border-radius: 999px;
+		padding: 0.28rem 0.62rem;
+		font-size: 0.76rem;
+		cursor: pointer;
+	}
+
+	.image-menu {
+		position: absolute;
+		top: calc(100% + 0.35rem);
+		right: 0;
+		width: min(300px, 90vw);
+		background: rgba(7, 30, 42, 0.92);
+		border: 1px solid rgba(180, 223, 233, 0.35);
+		border-radius: 12px;
+		padding: 0.5rem;
+		display: grid;
+		gap: 0.45rem;
+		z-index: 3;
+	}
+
+	.image-menu-action,
+	.image-menu-reset {
+		border: 1px solid rgba(174, 217, 229, 0.28);
+		background: rgba(8, 33, 46, 0.68);
+		color: #ebf9fd;
+		border-radius: 9px;
+		padding: 0.42rem 0.56rem;
+		font-size: 0.78rem;
+		cursor: pointer;
+		text-align: left;
+	}
+
+	.image-menu-action:disabled {
+		opacity: 0.68;
+		cursor: progress;
+	}
+
+	.image-menu-file {
+		display: grid;
+		gap: 0.4rem;
+	}
+
+	.image-menu-file label {
+		font-size: 0.74rem;
+		color: #c9e8f0;
+	}
+
+	.image-menu-file input {
+		border: 1px solid rgba(173, 219, 230, 0.34);
+		background: rgba(8, 33, 45, 0.72);
+		color: #edf9fd;
+		border-radius: 8px;
+		padding: 0.3rem 0.42rem;
+		font-size: 0.75rem;
+		min-width: 0;
+	}
+
+	.image-menu-error {
+		margin: 0;
+		color: #ffd4c7;
+		font-size: 0.75rem;
+	}
+
 	.debug-panel {
 		background: rgba(6, 27, 38, 0.72);
 		border: 1px solid rgba(169, 214, 224, 0.35);
@@ -653,6 +1455,20 @@
 		text-transform: uppercase;
 	}
 
+	.debug-info {
+		margin: 0 0 0.5rem;
+		font-size: 0.76rem;
+		color: #b6d6df;
+	}
+
+	.debug-info strong {
+		color: #e7fbff;
+	}
+
+	.debug-info span {
+		color: #f7c17c;
+	}
+
 	.renderer-buttons {
 		display: flex;
 		gap: 0.35rem;
@@ -665,8 +1481,90 @@
 		gap: 0.35rem;
 	}
 
+	.debug-precipitation {
+		margin-top: 0.55rem;
+		display: grid;
+		gap: 0.35rem;
+	}
+
+	.debug-precipitation-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+
+	.debug-precipitation-head .debug-label {
+		margin: 0;
+	}
+
+	.debug-precipitation-head strong {
+		color: #f5f7c2;
+		font-size: 0.82rem;
+	}
+
+	.debug-precipitation-range {
+		width: 100%;
+		accent-color: #7de6ef;
+	}
+
+	.debug-precipitation-number {
+		width: 84px;
+		border: 1px solid rgba(173, 219, 230, 0.34);
+		background: rgba(8, 33, 45, 0.72);
+		color: #ecf9fc;
+		border-radius: 8px;
+		padding: 0.28rem 0.45rem;
+		font-size: 0.8rem;
+	}
+
+	.debug-time {
+		margin-top: 0.55rem;
+		display: grid;
+		gap: 0.35rem;
+	}
+
+	.debug-time-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.5rem;
+	}
+
+	.debug-time-head .debug-label {
+		margin: 0;
+	}
+
+	.debug-time-head strong {
+		color: #f5f7c2;
+		font-size: 0.82rem;
+	}
+
+	.debug-time-info {
+		margin: 0;
+		font-size: 0.74rem;
+		color: #b3d5dd;
+	}
+
+	.debug-time-number {
+		width: 100%;
+		border: 1px solid rgba(173, 219, 230, 0.34);
+		background: rgba(8, 33, 45, 0.72);
+		color: #ecf9fc;
+		border-radius: 8px;
+		padding: 0.28rem 0.45rem;
+		font-size: 0.8rem;
+	}
+
+	.debug-time-buttons {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+
 	.renderer-buttons button,
-	.debug-buttons button {
+	.debug-buttons button,
+	.debug-time-buttons button {
 		border: 1px solid rgba(169, 215, 225, 0.28);
 		background: rgba(8, 33, 45, 0.66);
 		color: #e2f4f9;
@@ -900,4 +1798,6 @@
 		}
 	}
 </style>
+
+
 
