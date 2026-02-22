@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import WeatherFxLayer from '$lib/components/weather-fx-layer.svelte';
+	import type { WeatherRenderer } from '$lib/components/weather-fx/types';
 	import type { Municipality } from '$lib/domain/municipality';
+	import type { WeatherCondition } from '$lib/domain/weather';
 	import { toSlug } from '$lib/utils/text';
 	import type { PageData } from './$types';
 
@@ -11,13 +14,27 @@
 	let mode = $state<'photo' | 'minimal' | 'all-info'>('photo');
 	let hourlyPage = $state(0);
 	let dailyPage = $state(0);
+	let forcedCondition = $state<WeatherCondition | null>(null);
+	let selectedRenderer = $state<WeatherRenderer>('canvas2d');
 	let selectedProvince = $state('');
 	let provinceMunicipalities = $state<Municipality[]>([]);
 	let loadingProvinceMunicipalities = $state(false);
 	let provinceMunicipalityError = $state<string | null>(null);
+	const availableConditions: WeatherCondition[] = [
+		'clear',
+		'cloudy',
+		'rain',
+		'snow',
+		'storm',
+		'fog',
+		'unknown'
+	];
+	const conditionSet = new Set<WeatherCondition>(availableConditions);
+	const availableRenderers: WeatherRenderer[] = ['canvas2d', 'pixijs'];
 
 	const payload = $derived((data.payload ?? {}) as GenericPayload);
 	const status = $derived(payload.status ?? 'error');
+	const isDebugMode = $derived(Boolean(data.isDebugMode));
 	const report = $derived(status === 'ok' ? (payload.report as GenericPayload) : null);
 	const municipality = $derived(
 		status === 'ok' ? (payload.municipality as GenericPayload | null) : null
@@ -25,10 +42,23 @@
 	const hourly = $derived((report?.hourly as GenericPayload[] | undefined) ?? []);
 	const daily = $derived((report?.daily as GenericPayload[] | undefined) ?? []);
 
-	const weatherCondition = $derived(
-		(report?.current?.condition as string | undefined) ??
-			(daily[0]?.condition as string | undefined) ??
-			'unknown'
+	const weatherCondition = $derived<WeatherCondition>(
+		normalizeWeatherCondition(report?.current?.condition ?? daily[0]?.condition)
+	);
+	const activeWeatherCondition = $derived<WeatherCondition>(
+		isDebugMode ? (forcedCondition ?? weatherCondition) : weatherCondition
+	);
+	const activeRenderer = $derived<WeatherRenderer>(isDebugMode ? selectedRenderer : 'canvas2d');
+	const currentWindKmh = $derived(
+		typeof report?.current?.windKmh === 'number' && Number.isFinite(report.current.windKmh)
+			? report.current.windKmh
+			: 0
+	);
+	const currentPrecipitationProbability = $derived(
+		typeof report?.current?.precipitationProbabilityPercent === 'number' &&
+			Number.isFinite(report.current.precipitationProbabilityPercent)
+			? report.current.precipitationProbabilityPercent
+			: 0
 	);
 
 	const hourlyChunks = $derived(chunk(hourly, 12));
@@ -55,6 +85,9 @@
 		selectedProvince = data.province;
 		provinceMunicipalities = [];
 		provinceMunicipalityError = null;
+		if (!isDebugMode) {
+			selectedRenderer = 'canvas2d';
+		}
 	});
 
 	function chunk<T>(items: T[], size: number): T[][] {
@@ -67,6 +100,17 @@
 			output.push(items.slice(index, index + size));
 		}
 		return output;
+	}
+
+	function normalizeWeatherCondition(value: unknown): WeatherCondition {
+		if (typeof value !== 'string') {
+			return 'unknown';
+		}
+
+		const normalized = value.trim().toLowerCase();
+		return conditionSet.has(normalized as WeatherCondition)
+			? (normalized as WeatherCondition)
+			: 'unknown';
 	}
 
 	function formatTemp(value: unknown): string {
@@ -170,17 +214,21 @@
 
 <main class="page">
 	{#if status === 'ok' && report}
-		<div class={`scene mode-${mode} condition-${weatherCondition} ${compactMode ? 'compact' : ''}`}>
+		<div class={`scene mode-${mode} condition-${activeWeatherCondition} ${compactMode ? 'compact' : ''}`}>
 			{#if mode === 'photo' && report.backgroundImage?.url}
 				<div class="photo" style={`background-image:url('${report.backgroundImage.url}')`}></div>
 			{/if}
 
 			<div class="gradient"></div>
-			<div class="rain rain-back"></div>
-			<div class="rain rain-front"></div>
-			<div class="snow"></div>
-			<div class="storm"></div>
-			<div class="sun"></div>
+			<div class="fx-host">
+				<WeatherFxLayer
+					condition={activeWeatherCondition}
+					windKmh={currentWindKmh}
+					precipitationProbabilityPercent={currentPrecipitationProbability}
+					renderer={activeRenderer}
+					active={mode !== 'all-info'}
+				/>
+			</div>
 
 			<div class={`content ${compactMode ? 'content-compact' : ''}`}>
 				<header class="hero">
@@ -193,24 +241,56 @@
 						</p>
 					</div>
 
-					<div class="mode-switch" role="group" aria-label="Modo visual">
-						<button class:active={mode === 'photo'} type="button" onclick={() => (mode = 'photo')}>
-							Foto
-						</button>
-						<button
-							class:active={mode === 'minimal'}
-							type="button"
-							onclick={() => (mode = 'minimal')}
-						>
-							Minimal
-						</button>
-						<button
-							class:active={mode === 'all-info'}
-							type="button"
-							onclick={() => (mode = 'all-info')}
-						>
-							All info
-						</button>
+					<div class="hero-controls">
+						<div class="mode-switch" role="group" aria-label="Modo visual">
+							<button class:active={mode === 'photo'} type="button" onclick={() => (mode = 'photo')}>
+								Foto
+							</button>
+							<button
+								class:active={mode === 'minimal'}
+								type="button"
+								onclick={() => (mode = 'minimal')}
+							>
+								Minimal
+							</button>
+							<button
+								class:active={mode === 'all-info'}
+								type="button"
+								onclick={() => (mode = 'all-info')}
+							>
+								All info
+							</button>
+						</div>
+
+						{#if isDebugMode}
+							<section class="debug-panel">
+								<p class="debug-title">Debug clima</p>
+								<p class="debug-label">Renderer</p>
+								<div class="renderer-buttons">
+									{#each availableRenderers as rendererOption}
+										<button
+											type="button"
+											class:selected={rendererOption === activeRenderer}
+											onclick={() => (selectedRenderer = rendererOption)}
+										>
+											{rendererOption}
+										</button>
+									{/each}
+								</div>
+								<p class="debug-label">Condicion</p>
+								<div class="debug-buttons">
+									{#each availableConditions as condition}
+										<button
+											type="button"
+											class:selected={condition === activeWeatherCondition}
+											onclick={() => (forcedCondition = condition)}
+										>
+											{condition}
+										</button>
+									{/each}
+								</div>
+							</section>
+						{/if}
 					</div>
 				</header>
 
@@ -388,35 +468,37 @@
 
 <style>
 	.page {
-		min-height: 100vh;
-		padding: 1rem;
+		min-height: 100svh;
+		padding: 0;
 	}
 
 	.scene {
 		position: relative;
-		width: min(1150px, 100%);
-		min-height: calc(100vh - 2rem);
-		margin: 0 auto;
-		border-radius: 24px;
+		width: 100%;
+		min-height: 100svh;
+		margin: 0;
+		border-radius: 0;
 		overflow: hidden;
 		background: linear-gradient(160deg, #10384a, #0d2734);
-		box-shadow: 0 20px 40px rgba(7, 21, 27, 0.28);
+		box-shadow: none;
 	}
 
 	.photo,
 	.gradient,
-	.rain,
-	.snow,
-	.storm,
-	.sun {
+	.fx-host {
 		position: absolute;
 		inset: 0;
+	}
+
+	.fx-host {
+		pointer-events: none;
+		z-index: 0;
 	}
 
 	.photo {
 		background-size: cover;
 		background-position: center;
-		transform: scale(1.04);
+		background-repeat: no-repeat;
 		filter: saturate(1.1) contrast(1.05);
 	}
 
@@ -429,66 +511,6 @@
 				rgba(6, 21, 30, 0.75) 56%,
 				rgba(5, 18, 26, 0.96) 100%
 			);
-	}
-
-	.rain,
-	.snow,
-	.storm {
-		opacity: 0;
-		pointer-events: none;
-	}
-
-	.rain {
-		mix-blend-mode: screen;
-	}
-
-	.rain-back {
-		background-image: repeating-linear-gradient(
-			106deg,
-			transparent 0 10px,
-			rgba(176, 219, 255, 0.5) 11px 12px,
-			transparent 13px 24px
-		);
-		background-size: 240px 240px;
-	}
-
-	.rain-front {
-		background-image: repeating-linear-gradient(
-			104deg,
-			transparent 0 7px,
-			rgba(220, 241, 255, 0.72) 8px 9px,
-			transparent 10px 18px
-		);
-		background-size: 160px 160px;
-	}
-
-	.condition-rain .rain-back,
-	.condition-storm .rain-back {
-		opacity: 0.32;
-		animation: rain-back-fall 1.05s linear infinite;
-	}
-
-	.condition-rain .rain-front,
-	.condition-storm .rain-front {
-		opacity: 0.62;
-		animation: rain-front-fall 0.55s linear infinite;
-	}
-
-	.condition-snow .snow {
-		opacity: 0.7;
-		background-image: radial-gradient(rgba(255, 255, 255, 0.9) 1px, transparent 2px);
-		background-size: 16px 16px;
-		animation: snow-fall 4s linear infinite;
-	}
-
-	.condition-storm .storm {
-		opacity: 0.4;
-		background: radial-gradient(circle at 65% 20%, rgba(255, 255, 255, 0.7), transparent 35%);
-		animation: flash 2.6s ease-in-out infinite;
-	}
-
-	.condition-clear .sun {
-		background: radial-gradient(circle at 74% 12%, rgba(255, 209, 104, 0.78), transparent 28%);
 	}
 
 	.mode-minimal .photo {
@@ -513,10 +535,7 @@
 			linear-gradient(180deg, rgba(5, 24, 35, 0.85), rgba(4, 18, 27, 0.96));
 	}
 
-	.mode-all-info .rain,
-	.mode-all-info .snow,
-	.mode-all-info .storm,
-	.mode-all-info .sun {
+	.mode-all-info .fx-host {
 		display: none;
 	}
 
@@ -527,14 +546,15 @@
 		color: var(--text-strong);
 		display: grid;
 		gap: 1rem;
+		width: min(1220px, 100%);
 	}
 
 	.scene.compact {
-		min-height: max(68vh, 520px);
+		min-height: 100svh;
 	}
 
 	.content-compact {
-		max-width: 820px;
+		max-width: 760px;
 	}
 
 	.content-compact .current {
@@ -556,6 +576,12 @@
 		gap: 0.9rem;
 		justify-content: space-between;
 		align-items: flex-start;
+	}
+
+	.hero-controls {
+		display: grid;
+		gap: 0.6rem;
+		justify-items: end;
 	}
 
 	.chip {
@@ -599,6 +625,63 @@
 	.mode-switch button.active {
 		background: linear-gradient(110deg, var(--accent), #ffe099);
 		color: #2f2810;
+		font-weight: 700;
+	}
+
+	.debug-panel {
+		background: rgba(6, 27, 38, 0.72);
+		border: 1px solid rgba(169, 214, 224, 0.35);
+		border-radius: 14px;
+		padding: 0.5rem;
+		min-width: 260px;
+	}
+
+	.debug-title {
+		margin: 0 0 0.35rem;
+		font-size: 0.78rem;
+		font-weight: 700;
+		color: #9cd7e4;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+
+	.debug-label {
+		margin: 0 0 0.25rem;
+		font-size: 0.72rem;
+		letter-spacing: 0.05em;
+		color: #9bc0ca;
+		text-transform: uppercase;
+	}
+
+	.renderer-buttons {
+		display: flex;
+		gap: 0.35rem;
+		margin-bottom: 0.45rem;
+	}
+
+	.debug-buttons {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+
+	.renderer-buttons button,
+	.debug-buttons button {
+		border: 1px solid rgba(169, 215, 225, 0.28);
+		background: rgba(8, 33, 45, 0.66);
+		color: #e2f4f9;
+		padding: 0.28rem 0.6rem;
+		border-radius: 999px;
+		font-size: 0.78rem;
+		text-transform: capitalize;
+		cursor: pointer;
+	}
+
+	.renderer-buttons button.selected,
+	.debug-buttons button.selected {
+		background: linear-gradient(110deg, #7de6ef, #f9d789);
+		border-color: transparent;
+		color: #163840;
 		font-weight: 700;
 	}
 
@@ -805,47 +888,16 @@
 		color: #ffd2c7;
 	}
 
-	@keyframes rain-back-fall {
-		from {
-			transform: translate3d(0, -26px, 0);
-		}
-		to {
-			transform: translate3d(0, 26px, 0);
-		}
-	}
-
-	@keyframes rain-front-fall {
-		from {
-			transform: translate3d(0, -38px, 0);
-		}
-		to {
-			transform: translate3d(0, 38px, 0);
-		}
-	}
-
-	@keyframes snow-fall {
-		from {
-			background-position: 0 -24px;
-		}
-		to {
-			background-position: 0 24px;
-		}
-	}
-
-	@keyframes flash {
-		0%,
-		93%,
-		100% {
-			opacity: 0;
-		}
-		95% {
-			opacity: 0.65;
-		}
-	}
-
 	@media (max-width: 800px) {
-		.scene {
-			min-height: auto;
+		.hero-controls {
+			width: 100%;
+			justify-items: start;
+		}
+
+		.debug-panel {
+			min-width: 0;
+			width: 100%;
 		}
 	}
 </style>
+
