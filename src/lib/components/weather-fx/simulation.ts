@@ -121,6 +121,8 @@ export class WeatherFxSimulation {
 		const windPxPerSecond = lerp(8, 310, windStrength);
 		const precipStrength = clamp(this.input.precipitationProbabilityPercent / 100, 0, 1);
 		const condition = this.input.active ? this.input.condition : 'unknown';
+		const particleDensityScale = resolveParticleDensityScale(this.width, this.height);
+		const atmosphericDensityScale = lerp(0.72, 1, particleDensityScale);
 
 		this.precipLevel = resolvePrecipitationLevel(condition, precipStrength);
 		const rainIntensity = getRainIntensity(condition, precipStrength, this.precipLevel);
@@ -130,14 +132,22 @@ export class WeatherFxSimulation {
 		const windIntensity = clamp((windStrength - 0.05) / 0.95, 0, 1);
 
 		const targetRain = Math.round(
-			(this.input.active ? rainIntensity : 0) * 340 * PRECIPITATION_PARTICLE_MULTIPLIER
+			(this.input.active ? rainIntensity : 0) *
+				340 *
+				PRECIPITATION_PARTICLE_MULTIPLIER *
+				particleDensityScale
 		);
 		const targetSnow = Math.round(
-			(this.input.active ? snowIntensity : 0) * 210 * PRECIPITATION_PARTICLE_MULTIPLIER
+			(this.input.active ? snowIntensity : 0) *
+				210 *
+				PRECIPITATION_PARTICLE_MULTIPLIER *
+				particleDensityScale
 		);
-		const targetCloud = Math.round((this.input.active ? cloudIntensity : 0) * 14);
-		const targetFog = Math.round((this.input.active ? fogIntensity : 0) * 20);
-		const targetWind = Math.round((this.input.active ? windIntensity : 0) * 58);
+		const targetCloud = Math.round(
+			(this.input.active ? cloudIntensity : 0) * 14 * atmosphericDensityScale
+		);
+		const targetFog = Math.round((this.input.active ? fogIntensity : 0) * 20 * atmosphericDensityScale);
+		const targetWind = Math.round((this.input.active ? windIntensity : 0) * 58 * particleDensityScale);
 
 		this.syncRain(targetRain, windPxPerSecond, rainIntensity);
 		this.syncSnow(targetSnow);
@@ -326,7 +336,11 @@ export class WeatherFxSimulation {
 			}
 		}
 
-		const splashLimit = 340 * PRECIPITATION_PARTICLE_MULTIPLIER;
+		const splashLimit = Math.round(
+			340 *
+				PRECIPITATION_PARTICLE_MULTIPLIER *
+				resolveParticleDensityScale(this.width, this.height)
+		);
 		if (this.splashParticles.length > splashLimit) {
 			this.splashParticles.splice(0, this.splashParticles.length - splashLimit);
 		}
@@ -601,4 +615,14 @@ function rand(min: number, max: number): number {
 
 function randInt(min: number, max: number): number {
 	return Math.floor(rand(min, max + 1));
+}
+
+function resolveParticleDensityScale(width: number, height: number): number {
+	const safeWidth = Math.max(1, width);
+	const safeHeight = Math.max(1, height);
+	const viewportArea = safeWidth * safeHeight;
+	const baselineArea = 1366 * 768;
+	const ratio = viewportArea / baselineArea;
+
+	return clamp(Math.pow(ratio, 0.55), 0.38, 1.18);
 }

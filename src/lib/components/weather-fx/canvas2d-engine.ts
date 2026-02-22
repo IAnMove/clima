@@ -1,6 +1,8 @@
 import type { WeatherFxEngine, WeatherFxInput } from './types';
 import { WeatherFxSimulation, sampleCloudPuff, sampleFogLobe } from './simulation';
 
+const MAX_RENDER_DPR = 1.75;
+
 export class Canvas2DWeatherFxEngine implements WeatherFxEngine {
 	private readonly canvas: HTMLCanvasElement;
 	private readonly context: CanvasRenderingContext2D;
@@ -30,7 +32,7 @@ export class Canvas2DWeatherFxEngine implements WeatherFxEngine {
 		this.width = Math.max(1, Math.floor(width));
 		this.height = Math.max(1, Math.floor(height));
 
-		const dpr = window.devicePixelRatio || 1;
+		const dpr = Math.min(window.devicePixelRatio || 1, MAX_RENDER_DPR);
 		this.canvas.width = Math.max(1, Math.floor(this.width * dpr));
 		this.canvas.height = Math.max(1, Math.floor(this.height * dpr));
 		this.canvas.style.width = `${this.width}px`;

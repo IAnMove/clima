@@ -12,6 +12,8 @@ type UnknownRecord = Record<string, unknown>;
 
 const CACHE_TTL_MUNICIPALITIES_MS = 6 * 60 * 60 * 1000;
 const CACHE_TTL_IMAGE_MS = 24 * 60 * 60 * 1000;
+const CACHE_TTL_WEATHER_MS = 8 * 60 * 1000;
+const MAX_WEATHER_CACHE_ENTRIES = 200;
 
 export class AemetWeatherProvider implements WeatherProvider {
 	readonly id = 'aemet';
@@ -30,6 +32,14 @@ export class AemetWeatherProvider implements WeatherProvider {
 			image: WeatherImage | null;
 		}
 	>();
+	private readonly weatherCache = new Map<
+		string,
+		{
+			expiresAt: number;
+			report: WeatherReport;
+		}
+	>();
+	private readonly weatherInFlight = new Map<string, Promise<WeatherReport>>();
 
 	constructor(private readonly client: AemetClient = new AemetClient()) {}
 
@@ -121,6 +131,35 @@ export class AemetWeatherProvider implements WeatherProvider {
 			throw new Error('Código de municipio inválido');
 		}
 
+		const now = Date.now();
+		const cached = this.weatherCache.get(municipalityCode);
+		if (cached && cached.expiresAt > now) {
+			return cached.report;
+		}
+
+		const inFlight = this.weatherInFlight.get(municipalityCode);
+		if (inFlight) {
+			return inFlight;
+		}
+
+		const request = this.fetchWeatherReport(municipalityCode)
+			.then((report) => {
+				this.weatherCache.set(municipalityCode, {
+					expiresAt: Date.now() + CACHE_TTL_WEATHER_MS,
+					report
+				});
+				this.pruneWeatherCache();
+				return report;
+			})
+			.finally(() => {
+				this.weatherInFlight.delete(municipalityCode);
+			});
+
+		this.weatherInFlight.set(municipalityCode, request);
+		return request;
+	}
+
+	private async fetchWeatherReport(municipalityCode: string): Promise<WeatherReport> {
 		const [hourlyRaw, dailyRaw] = await Promise.all([
 			this.client.getHourlyForecastRaw(municipalityCode),
 			this.client.getDailyForecastRaw(municipalityCode)
@@ -141,6 +180,29 @@ export class AemetWeatherProvider implements WeatherProvider {
 			daily,
 			backgroundImage
 		};
+	}
+
+	private pruneWeatherCache(): void {
+		const now = Date.now();
+
+		for (const [cacheKey, entry] of this.weatherCache.entries()) {
+			if (entry.expiresAt <= now) {
+				this.weatherCache.delete(cacheKey);
+			}
+		}
+
+		if (this.weatherCache.size <= MAX_WEATHER_CACHE_ENTRIES) {
+			return;
+		}
+
+		const overflow = this.weatherCache.size - MAX_WEATHER_CACHE_ENTRIES;
+		const keys = [...this.weatherCache.keys()];
+		for (let index = 0; index < overflow; index += 1) {
+			const key = keys[index];
+			if (key) {
+				this.weatherCache.delete(key);
+			}
+		}
 	}
 
 	async listProvinces(): Promise<string[]> {

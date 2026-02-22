@@ -3,6 +3,7 @@ import type { WeatherFxEngine, WeatherFxInput } from './types';
 import { WeatherFxSimulation, sampleCloudPuff, sampleFogLobe } from './simulation';
 
 type PixiModule = typeof PIXIType;
+const MAX_RENDER_DPR = 1.75;
 
 export class PixiWeatherFxEngine implements WeatherFxEngine {
 	private readonly app: PIXIType.Application;
@@ -24,7 +25,7 @@ export class PixiWeatherFxEngine implements WeatherFxEngine {
 			antialias: true,
 			backgroundAlpha: 0,
 			autoDensity: true,
-			resolution: window.devicePixelRatio || 1
+			resolution: Math.min(window.devicePixelRatio || 1, MAX_RENDER_DPR)
 		});
 
 		this.sunLayer = new PIXI.Graphics();
