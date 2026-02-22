@@ -63,16 +63,79 @@ export class AemetClient {
 		});
 
 		if (!response.ok) {
-			const body = await response.text();
+			const body = await decodeResponseText(response);
 			throw new Error(`AEMET ${response.status}: ${body.slice(0, 200)}`);
 		}
 
-		const text = await response.text();
+		const text = await decodeResponseText(response);
 
 		try {
-			return JSON.parse(text) as T;
+			const parsed = JSON.parse(text) as T;
+			return repairMojibakeDeep(parsed);
 		} catch {
 			throw new Error('Respuesta de AEMET no es JSON válido');
 		}
 	}
+}
+
+async function decodeResponseText(response: Response): Promise<string> {
+	const buffer = await response.arrayBuffer();
+	const contentType = response.headers.get('content-type') ?? '';
+	const charset = parseCharset(contentType) ?? 'utf-8';
+
+	try {
+		return new TextDecoder(charset).decode(buffer);
+	} catch {
+		return new TextDecoder('utf-8').decode(buffer);
+	}
+}
+
+function parseCharset(contentType: string): string | null {
+	const match = contentType.match(/charset\s*=\s*["']?([^;"'\s]+)/i);
+	return match?.[1]?.trim().toLowerCase() ?? null;
+}
+
+function repairMojibakeDeep<T>(value: T): T {
+	if (typeof value === 'string') {
+		return repairPotentialMojibake(value) as T;
+	}
+
+	if (Array.isArray(value)) {
+		return value.map((item) => repairMojibakeDeep(item)) as T;
+	}
+
+	if (!value || typeof value !== 'object') {
+		return value;
+	}
+
+	const input = value as Record<string, unknown>;
+	const output: Record<string, unknown> = {};
+
+	for (const [key, nested] of Object.entries(input)) {
+		output[key] = repairMojibakeDeep(nested);
+	}
+
+	return output as T;
+}
+
+function repairPotentialMojibake(input: string): string {
+	if (!/[ÃÂ]/.test(input)) {
+		return input;
+	}
+
+	try {
+		const bytes = new Uint8Array(input.length);
+		for (let index = 0; index < input.length; index += 1) {
+			bytes[index] = input.charCodeAt(index) & 0xff;
+		}
+		const repaired = new TextDecoder('utf-8').decode(bytes);
+		return mojibakeScore(repaired) < mojibakeScore(input) ? repaired : input;
+	} catch {
+		return input;
+	}
+}
+
+function mojibakeScore(input: string): number {
+	const matches = input.match(/[ÃÂ�]/g);
+	return matches ? matches.length : 0;
 }

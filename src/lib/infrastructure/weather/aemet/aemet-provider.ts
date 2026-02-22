@@ -118,7 +118,7 @@ export class AemetWeatherProvider implements WeatherProvider {
 	async getWeatherByMunicipalityCode(code: string): Promise<WeatherReport> {
 		const municipalityCode = normalizeMunicipalityCode(code);
 		if (!municipalityCode) {
-			throw new Error('CÃ³digo de municipio invÃ¡lido');
+			throw new Error('Código de municipio inválido');
 		}
 
 		const [hourlyRaw, dailyRaw] = await Promise.all([
@@ -938,7 +938,7 @@ async function fetchFlickrLandscapeImage(query: string): Promise<WeatherImage | 
 
 			const authorName = extractFlickrAuthorName(getString(item.author));
 			const highResUrl = imageUrl.replace(/_m\.(jpg|jpeg|png)$/i, '_z.$1');
-			const attributionText = [title, authorName, 'Flickr'].filter(Boolean).join(' Â· ');
+			const attributionText = [title, authorName, 'Flickr'].filter(Boolean).join(' · ');
 
 			return {
 				url: highResUrl,
@@ -1043,7 +1043,7 @@ async function fetchWikipediaImage(
 
 		return {
 			url: imageUrl,
-			attributionText: body.title ? `${body.title} Â· Wikipedia` : 'Wikipedia',
+			attributionText: body.title ? `${body.title} · Wikipedia` : 'Wikipedia',
 			attributionUrl: body.content_urls?.desktop?.page ?? null
 		};
 	} catch {
