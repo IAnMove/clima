@@ -126,7 +126,7 @@
 	onMount(() => {
 		autoRenderer = detectPreferredRenderer();
 
-		const tickMs = isDebugMode ? 1_000 : 30_000;
+		const tickMs = isDebugMode ? 1_000 : 60_000;
 		const timer = window.setInterval(() => {
 			now = new Date();
 		}, tickMs);

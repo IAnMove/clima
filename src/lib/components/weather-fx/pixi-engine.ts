@@ -7,7 +7,6 @@ const MAX_RENDER_DPR = 1.75;
 
 export class PixiWeatherFxEngine implements WeatherFxEngine {
 	private readonly app: PIXIType.Application;
-	private readonly sunLayer: PIXIType.Graphics;
 	private readonly atmosphereLayer: PIXIType.Graphics;
 	private readonly windLayer: PIXIType.Graphics;
 	private readonly precipLayer: PIXIType.Graphics;
@@ -39,14 +38,12 @@ export class PixiWeatherFxEngine implements WeatherFxEngine {
 			resolution: Math.min(window.devicePixelRatio || 1, Math.min(MAX_RENDER_DPR, resolveDprCap(quality)))
 		});
 
-		this.sunLayer = new PIXI.Graphics();
 		this.atmosphereLayer = new PIXI.Graphics();
 		this.windLayer = new PIXI.Graphics();
 		this.precipLayer = new PIXI.Graphics();
 		this.splashLayer = new PIXI.Graphics();
 		this.flashLayer = new PIXI.Graphics();
 
-		this.app.stage.addChild(this.sunLayer);
 		this.app.stage.addChild(this.atmosphereLayer);
 		this.app.stage.addChild(this.windLayer);
 		this.app.stage.addChild(this.precipLayer);
@@ -95,36 +92,18 @@ export class PixiWeatherFxEngine implements WeatherFxEngine {
 	};
 
 	private draw(): void {
-		this.sunLayer.clear();
 		this.atmosphereLayer.clear();
 		this.windLayer.clear();
 		this.precipLayer.clear();
 		this.splashLayer.clear();
 		this.flashLayer.clear();
 
-		this.drawSun(this.sunLayer);
 		this.drawCloudsAndFog(this.atmosphereLayer);
 		this.drawWind(this.windLayer);
 		this.drawRain(this.precipLayer);
 		this.drawSnow(this.precipLayer);
 		this.drawSplashes(this.splashLayer);
 		this.drawStormFlash(this.flashLayer);
-	}
-
-	private drawSun(g: PIXIType.Graphics): void {
-		const amount = this.simulation.getSunAmount();
-		if (amount <= 0) {
-			return;
-		}
-
-		const x = this.width * 0.82;
-		const y = this.height * 0.14;
-		g.beginFill(0xffdfa5, 0.14 * amount);
-		g.drawCircle(x, y, this.width * 0.34);
-		g.endFill();
-		g.beginFill(0xffcf7a, 0.22 * amount);
-		g.drawCircle(x, y, this.width * 0.2);
-		g.endFill();
 	}
 
 	private drawCloudsAndFog(g: PIXIType.Graphics): void {
