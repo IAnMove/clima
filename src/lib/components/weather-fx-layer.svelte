@@ -26,6 +26,7 @@
 	let resizeObserver: ResizeObserver | null = null;
 	let currentRenderer: WeatherRenderer | null = null;
 	let rendererBuildId = 0;
+	let ensureRaf = 0;
 	let qualityScale = $state(1);
 	let detachQualityTracking: (() => void) | null = null;
 
@@ -38,6 +39,7 @@
 		}
 
 		return () => {
+			cancelScheduledEnsure();
 			teardownQualityTracking();
 			destroyEngine();
 			disconnectObserver();
@@ -46,6 +48,7 @@
 	});
 
 	onDestroy(() => {
+		cancelScheduledEnsure();
 		teardownQualityTracking();
 		destroyEngine();
 		disconnectObserver();
@@ -56,6 +59,7 @@
 			return;
 		}
 		if (!active) {
+			cancelScheduledEnsure();
 			destroyEngine();
 			return;
 		}
@@ -95,9 +99,17 @@
 		}
 
 		if (engine && currentRenderer === renderer) {
-			resizeEngine();
+			if (!resizeEngine()) {
+				scheduleEnsureEngine();
+				return;
+			}
 			engine.setInput(toEngineInput());
 			onRendererResolved?.(currentRenderer);
+			return;
+		}
+
+		if (!hasRenderableSize()) {
+			scheduleEnsureEngine();
 			return;
 		}
 
@@ -120,23 +132,63 @@
 		destroyEngine();
 		engine = created.engine;
 		currentRenderer = created.resolvedRenderer;
-		resizeEngine();
+		if (!resizeEngine()) {
+			scheduleEnsureEngine();
+			return;
+		}
 		engine.setInput(toEngineInput());
 		onRendererResolved?.(created.resolvedRenderer);
+		requestAnimationFrame(() => {
+			void ensureEngine();
+		});
 	}
 
-	function resizeEngine(): void {
+	function resizeEngine(): boolean {
 		if (!canvasEl || !engine) {
-			return;
+			return false;
 		}
 
 		const host = canvasEl.parentElement;
 		if (!host) {
-			return;
+			return false;
 		}
 
 		const rect = host.getBoundingClientRect();
+		if (rect.width < 2 || rect.height < 2) {
+			return false;
+		}
 		engine.resize(rect.width, rect.height);
+		return true;
+	}
+
+	function hasRenderableSize(): boolean {
+		const host = canvasEl?.parentElement;
+		if (!host) {
+			return false;
+		}
+
+		const rect = host.getBoundingClientRect();
+		return rect.width >= 2 && rect.height >= 2;
+	}
+
+	function scheduleEnsureEngine(): void {
+		if (!mounted || !active || ensureRaf) {
+			return;
+		}
+
+		ensureRaf = requestAnimationFrame(() => {
+			ensureRaf = 0;
+			void ensureEngine();
+		});
+	}
+
+	function cancelScheduledEnsure(): void {
+		if (!ensureRaf) {
+			return;
+		}
+
+		cancelAnimationFrame(ensureRaf);
+		ensureRaf = 0;
 	}
 
 	function destroyEngine(): void {

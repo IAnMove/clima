@@ -1408,7 +1408,8 @@
 	}
 
 	.mode-all-info .fx-host {
-		display: none;
+		opacity: 0;
+		visibility: hidden;
 	}
 
 	.content {
