@@ -1,16 +1,18 @@
 <script lang="ts">
-	import favicon from '$lib/assets/favicon.svg';
+	import favicon from '../../assets/clima.ico';
 
 	let { children } = $props();
+	const buildCommit = __BUILD_COMMIT__;
 </script>
 
 <svelte:head>
-	<link rel="icon" href={favicon} />
+	<link rel="icon" type="image/x-icon" href={favicon} />
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>Clima Visual</title>
 </svelte:head>
 
 {@render children()}
+<div class="build-version" title={`build ${buildCommit}`} aria-hidden="true">b {buildCommit}</div>
 
 <style>
 	:global(:root) {
@@ -47,5 +49,18 @@
 	:global(input),
 	:global(select) {
 		font: inherit;
+	}
+
+	.build-version {
+		position: fixed;
+		right: 0.45rem;
+		bottom: 0.32rem;
+		z-index: 9999;
+		font-size: 0.55rem;
+		letter-spacing: 0.06em;
+		color: rgba(208, 228, 236, 0.26);
+		text-shadow: 0 1px 2px rgba(0, 0, 0, 0.42);
+		user-select: none;
+		pointer-events: none;
 	}
 </style>

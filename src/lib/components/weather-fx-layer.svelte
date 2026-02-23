@@ -26,13 +26,17 @@
 	let resizeObserver: ResizeObserver | null = null;
 	let currentRenderer: WeatherRenderer | null = null;
 	let rendererBuildId = 0;
+	let qualityScale = $state(1);
+	let detachQualityTracking: (() => void) | null = null;
 
 	onMount(() => {
 		mounted = true;
+		setupQualityTracking();
 		observeContainer();
 		void ensureEngine();
 
 		return () => {
+			teardownQualityTracking();
 			destroyEngine();
 			disconnectObserver();
 			mounted = false;
@@ -40,6 +44,7 @@
 	});
 
 	onDestroy(() => {
+		teardownQualityTracking();
 		destroyEngine();
 		disconnectObserver();
 	});
@@ -141,8 +146,85 @@
 			condition,
 			windKmh: sanitizeNumber(windKmh),
 			precipitationProbabilityPercent: sanitizeNumber(precipitationProbabilityPercent),
-			active
+			active,
+			qualityScale
 		};
+	}
+
+	function setupQualityTracking(): void {
+		if (typeof window === 'undefined') {
+			return;
+		}
+
+		const refresh = () => {
+			qualityScale = detectQualityScale();
+		};
+
+		const mediaQueries = [
+			window.matchMedia('(max-width: 900px)'),
+			window.matchMedia('(max-width: 520px)'),
+			window.matchMedia('(pointer: coarse)'),
+			window.matchMedia('(prefers-reduced-motion: reduce)')
+		];
+
+		for (const query of mediaQueries) {
+			query.addEventListener('change', refresh);
+		}
+		window.addEventListener('resize', refresh, { passive: true });
+		window.addEventListener('orientationchange', refresh);
+		refresh();
+
+		detachQualityTracking = () => {
+			for (const query of mediaQueries) {
+				query.removeEventListener('change', refresh);
+			}
+			window.removeEventListener('resize', refresh);
+			window.removeEventListener('orientationchange', refresh);
+		};
+	}
+
+	function teardownQualityTracking(): void {
+		if (detachQualityTracking) {
+			detachQualityTracking();
+			detachQualityTracking = null;
+		}
+	}
+
+	function detectQualityScale(): number {
+		if (typeof window === 'undefined') {
+			return 1;
+		}
+
+		let scale = 1;
+		const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
+		const isNarrow = window.matchMedia('(max-width: 900px)').matches;
+		const isVeryNarrow = window.matchMedia('(max-width: 520px)').matches;
+		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+		if (isCoarsePointer || isNarrow) {
+			scale = 0.58;
+		}
+		if (isVeryNarrow) {
+			scale = 0.42;
+		}
+		if (reducedMotion) {
+			scale = Math.min(scale, 0.3);
+		}
+
+		const nav = navigator as Navigator & { deviceMemory?: number };
+		if (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 4) {
+			scale *= 0.82;
+		}
+
+		return clampQualityScale(scale);
+	}
+
+	function clampQualityScale(value: number): number {
+		if (!Number.isFinite(value)) {
+			return 1;
+		}
+
+		return Math.min(1, Math.max(0.25, value));
 	}
 
 	async function createEngine(

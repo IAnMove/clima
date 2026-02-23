@@ -7,6 +7,7 @@ export interface WeatherFxInput {
 	windKmh: number;
 	precipitationProbabilityPercent: number;
 	active: boolean;
+	qualityScale?: number;
 }
 
 export interface WeatherFxEngine {
@@ -14,4 +15,3 @@ export interface WeatherFxEngine {
 	resize(width: number, height: number): void;
 	destroy(): void;
 }
-

@@ -86,7 +86,8 @@ const DEFAULT_INPUT: WeatherFxInput = {
 	condition: 'unknown',
 	windKmh: 0,
 	precipitationProbabilityPercent: 0,
-	active: true
+	active: true,
+	qualityScale: 1
 };
 
 export class WeatherFxSimulation {
@@ -121,8 +122,12 @@ export class WeatherFxSimulation {
 		const windPxPerSecond = lerp(8, 310, windStrength);
 		const precipStrength = clamp(this.input.precipitationProbabilityPercent / 100, 0, 1);
 		const condition = this.input.active ? this.input.condition : 'unknown';
-		const particleDensityScale = resolveParticleDensityScale(this.width, this.height);
-		const atmosphericDensityScale = lerp(0.72, 1, particleDensityScale);
+		const qualityScale = clamp(this.input.qualityScale ?? 1, 0.25, 1);
+		const particleDensityScale = resolveParticleDensityScale(this.width, this.height) * qualityScale;
+		const atmosphericDensityScale =
+			lerp(0.66, 1, particleDensityScale) * lerp(0.8, 1, qualityScale);
+		const cloudFactor = qualityScale < 0.5 ? 0.82 : 1;
+		const fogFactor = qualityScale < 0.6 ? 0.58 : 1;
 
 		this.precipLevel = resolvePrecipitationLevel(condition, precipStrength);
 		const rainIntensity = getRainIntensity(condition, precipStrength, this.precipLevel);
@@ -144,9 +149,11 @@ export class WeatherFxSimulation {
 				particleDensityScale
 		);
 		const targetCloud = Math.round(
-			(this.input.active ? cloudIntensity : 0) * 14 * atmosphericDensityScale
+			(this.input.active ? cloudIntensity : 0) * 14 * atmosphericDensityScale * cloudFactor
 		);
-		const targetFog = Math.round((this.input.active ? fogIntensity : 0) * 20 * atmosphericDensityScale);
+		const targetFog = Math.round(
+			(this.input.active ? fogIntensity : 0) * 20 * atmosphericDensityScale * fogFactor
+		);
 		const targetWind = Math.round((this.input.active ? windIntensity : 0) * 58 * particleDensityScale);
 
 		this.syncRain(targetRain, windPxPerSecond, rainIntensity);
@@ -336,10 +343,12 @@ export class WeatherFxSimulation {
 			}
 		}
 
+		const qualityScale = clamp(this.input.qualityScale ?? 1, 0.25, 1);
 		const splashLimit = Math.round(
 			340 *
 				PRECIPITATION_PARTICLE_MULTIPLIER *
-				resolveParticleDensityScale(this.width, this.height)
+				resolveParticleDensityScale(this.width, this.height) *
+				qualityScale
 		);
 		if (this.splashParticles.length > splashLimit) {
 			this.splashParticles.splice(0, this.splashParticles.length - splashLimit);
@@ -347,7 +356,7 @@ export class WeatherFxSimulation {
 	}
 
 	private updateStormFlash(dt: number, condition: WeatherCondition, rainIntensity: number): void {
-		if (condition === 'storm') {
+		if (condition === 'storm' && rainIntensity > 0) {
 			if (Math.random() < dt * (0.42 + rainIntensity)) {
 				this.stormFlash = rand(0.4, 0.94);
 			}
@@ -510,6 +519,9 @@ function resolvePrecipitationLevel(
 	}
 
 	const value = clamp(precipitationStrength, 0, 1);
+	if (value <= 0) {
+		return 'none';
+	}
 	if (value < 0.3) {
 		return 'low';
 	}
@@ -525,7 +537,7 @@ function getRainIntensity(
 	level: PrecipitationLevel
 ): number {
 	if (condition !== 'rain' && condition !== 'storm') {
-		return condition === 'fog' ? 0.03 : 0;
+		return 0;
 	}
 
 	const byLevel: Record<Exclude<PrecipitationLevel, 'none'>, number> = {
