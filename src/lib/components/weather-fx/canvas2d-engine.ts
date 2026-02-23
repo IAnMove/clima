@@ -9,8 +9,15 @@ export class Canvas2DWeatherFxEngine implements WeatherFxEngine {
 	private readonly simulation = new WeatherFxSimulation();
 	private animationHandle = 0;
 	private lastTime = 0;
+	private frameBudgetMs = 0;
 	private width = 1;
 	private height = 1;
+	private currentInput: WeatherFxInput;
+
+	private readonly onVisibilityChange = (): void => {
+		this.lastTime = performance.now();
+		this.frameBudgetMs = 0;
+	};
 
 	constructor(canvas: HTMLCanvasElement, input: WeatherFxInput) {
 		const context = canvas.getContext('2d', { alpha: true });
@@ -20,33 +27,46 @@ export class Canvas2DWeatherFxEngine implements WeatherFxEngine {
 
 		this.canvas = canvas;
 		this.context = context;
+		this.currentInput = input;
 		this.simulation.setInput(input);
+		document.addEventListener('visibilitychange', this.onVisibilityChange);
 		this.start();
 	}
 
 	setInput(input: WeatherFxInput): void {
+		const previousQuality = resolveQualityScale(this.currentInput.qualityScale);
+		const nextQuality = resolveQualityScale(input.qualityScale);
+		this.currentInput = input;
 		this.simulation.setInput(input);
+		if (Math.abs(previousQuality - nextQuality) > 0.02) {
+			this.applyCanvasResolution();
+		}
 	}
 
 	resize(width: number, height: number): void {
 		this.width = Math.max(1, Math.floor(width));
 		this.height = Math.max(1, Math.floor(height));
+		this.applyCanvasResolution();
+		this.simulation.resize(this.width, this.height);
+	}
 
-		const dpr = Math.min(window.devicePixelRatio || 1, MAX_RENDER_DPR);
+	destroy(): void {
+		document.removeEventListener('visibilitychange', this.onVisibilityChange);
+		if (this.animationHandle) {
+			cancelAnimationFrame(this.animationHandle);
+			this.animationHandle = 0;
+		}
+	}
+
+	private applyCanvasResolution(): void {
+		const quality = resolveQualityScale(this.currentInput.qualityScale);
+		const dprCap = resolveDprCap(quality);
+		const dpr = Math.min(window.devicePixelRatio || 1, Math.min(MAX_RENDER_DPR, dprCap));
 		this.canvas.width = Math.max(1, Math.floor(this.width * dpr));
 		this.canvas.height = Math.max(1, Math.floor(this.height * dpr));
 		this.canvas.style.width = `${this.width}px`;
 		this.canvas.style.height = `${this.height}px`;
 		this.context.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-		this.simulation.resize(this.width, this.height);
-	}
-
-	destroy(): void {
-		if (this.animationHandle) {
-			cancelAnimationFrame(this.animationHandle);
-			this.animationHandle = 0;
-		}
 	}
 
 	private start(): void {
@@ -55,9 +75,23 @@ export class Canvas2DWeatherFxEngine implements WeatherFxEngine {
 	}
 
 	private readonly tick = (now: number): void => {
-		const dt = Math.max(0.001, (now - this.lastTime) / 1000);
+		const elapsedMs = Math.max(0, Math.min(220, now - this.lastTime));
 		this.lastTime = now;
 
+		if (document.hidden) {
+			this.animationHandle = requestAnimationFrame(this.tick);
+			return;
+		}
+
+		this.frameBudgetMs += elapsedMs;
+		const frameIntervalMs = resolveFrameIntervalMs(this.currentInput);
+		if (this.frameBudgetMs < frameIntervalMs) {
+			this.animationHandle = requestAnimationFrame(this.tick);
+			return;
+		}
+
+		const dt = Math.max(0.001, Math.min(0.12, this.frameBudgetMs / 1000));
+		this.frameBudgetMs = 0;
 		this.simulation.step(dt);
 		this.draw();
 
@@ -282,4 +316,48 @@ export class Canvas2DWeatherFxEngine implements WeatherFxEngine {
 		ctx.fill();
 		ctx.restore();
 	}
+}
+
+function resolveQualityScale(value: number | undefined): number {
+	if (typeof value !== 'number' || Number.isNaN(value)) {
+		return 1;
+	}
+
+	return Math.min(1, Math.max(0.12, value));
+}
+
+function resolveDprCap(quality: number): number {
+	if (quality <= 0.2) {
+		return 0.85;
+	}
+	if (quality <= 0.32) {
+		return 1;
+	}
+	if (quality <= 0.5) {
+		return 1.2;
+	}
+	if (quality <= 0.72) {
+		return 1.45;
+	}
+	return MAX_RENDER_DPR;
+}
+
+function resolveFrameIntervalMs(input: WeatherFxInput): number {
+	const quality = resolveQualityScale(input.qualityScale);
+	if (!input.active) {
+		return 100;
+	}
+	if (quality <= 0.18) {
+		return 1000 / 18;
+	}
+	if (quality <= 0.3) {
+		return 1000 / 24;
+	}
+	if (quality <= 0.5) {
+		return 1000 / 30;
+	}
+	if (quality <= 0.75) {
+		return 1000 / 40;
+	}
+	return 1000 / 60;
 }

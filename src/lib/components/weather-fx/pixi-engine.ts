@@ -16,16 +16,27 @@ export class PixiWeatherFxEngine implements WeatherFxEngine {
 	private readonly simulation = new WeatherFxSimulation();
 	private width = 1;
 	private height = 1;
+	private currentInput: WeatherFxInput;
+
+	private readonly onVisibilityChange = (): void => {
+		if (document.hidden) {
+			this.app.ticker.stop();
+		} else if (!this.app.ticker.started) {
+			this.app.ticker.start();
+		}
+	};
 
 	constructor(PIXI: PixiModule, canvas: HTMLCanvasElement, input: WeatherFxInput) {
+		this.currentInput = input;
 		this.simulation.setInput(input);
+		const quality = resolveQualityScale(input.qualityScale);
 
 		this.app = new PIXI.Application({
 			view: canvas,
 			antialias: true,
 			backgroundAlpha: 0,
 			autoDensity: true,
-			resolution: Math.min(window.devicePixelRatio || 1, MAX_RENDER_DPR)
+			resolution: Math.min(window.devicePixelRatio || 1, Math.min(MAX_RENDER_DPR, resolveDprCap(quality)))
 		});
 
 		this.sunLayer = new PIXI.Graphics();
@@ -49,21 +60,30 @@ export class PixiWeatherFxEngine implements WeatherFxEngine {
 		const atmosphereBlur = new PIXI.BlurFilter(8.2, 3);
 		this.atmosphereLayer.filters = [atmosphereBlur];
 
+		this.app.ticker.maxFPS = resolveMaxFps(input);
 		this.app.ticker.add(this.tick);
+		document.addEventListener('visibilitychange', this.onVisibilityChange);
 	}
 
 	setInput(input: WeatherFxInput): void {
+		this.currentInput = input;
 		this.simulation.setInput(input);
+		this.app.ticker.maxFPS = resolveMaxFps(input);
 	}
 
 	resize(width: number, height: number): void {
 		this.width = Math.max(1, Math.floor(width));
 		this.height = Math.max(1, Math.floor(height));
+		this.app.renderer.resolution = Math.min(
+			window.devicePixelRatio || 1,
+			Math.min(MAX_RENDER_DPR, resolveDprCap(resolveQualityScale(this.currentInput.qualityScale)))
+		);
 		this.app.renderer.resize(this.width, this.height);
 		this.simulation.resize(this.width, this.height);
 	}
 
 	destroy(): void {
+		document.removeEventListener('visibilitychange', this.onVisibilityChange);
 		this.app.ticker.remove(this.tick);
 		this.app.destroy();
 	}
@@ -210,4 +230,48 @@ export class PixiWeatherFxEngine implements WeatherFxEngine {
 		g.drawRect(0, 0, this.width, this.height);
 		g.endFill();
 	}
+}
+
+function resolveQualityScale(value: number | undefined): number {
+	if (typeof value !== 'number' || Number.isNaN(value)) {
+		return 1;
+	}
+
+	return Math.min(1, Math.max(0.12, value));
+}
+
+function resolveDprCap(quality: number): number {
+	if (quality <= 0.2) {
+		return 0.8;
+	}
+	if (quality <= 0.32) {
+		return 1;
+	}
+	if (quality <= 0.5) {
+		return 1.2;
+	}
+	if (quality <= 0.75) {
+		return 1.45;
+	}
+	return MAX_RENDER_DPR;
+}
+
+function resolveMaxFps(input: WeatherFxInput): number {
+	const quality = resolveQualityScale(input.qualityScale);
+	if (!input.active) {
+		return 10;
+	}
+	if (quality <= 0.18) {
+		return 18;
+	}
+	if (quality <= 0.3) {
+		return 24;
+	}
+	if (quality <= 0.5) {
+		return 30;
+	}
+	if (quality <= 0.75) {
+		return 40;
+	}
+	return 60;
 }

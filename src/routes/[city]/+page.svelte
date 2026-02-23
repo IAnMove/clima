@@ -29,6 +29,7 @@
 	let dailyPage = $state(0);
 	let forcedCondition = $state<WeatherCondition | null>(null);
 	let selectedRenderer = $state<WeatherRenderer>('canvas2d');
+	let autoRenderer = $state<WeatherRenderer>('canvas2d');
 	let resolvedRenderer = $state<WeatherRenderer>('canvas2d');
 	let debugPrecipitationPercent = $state(0);
 	let debugPrecipitationSeed = $state('');
@@ -72,7 +73,7 @@
 	const activeWeatherCondition = $derived<WeatherCondition>(
 		isDebugMode ? (forcedCondition ?? weatherCondition) : weatherCondition
 	);
-	const activeRenderer = $derived<WeatherRenderer>(isDebugMode ? selectedRenderer : 'canvas2d');
+	const activeRenderer = $derived<WeatherRenderer>(isDebugMode ? selectedRenderer : autoRenderer);
 	const isRendererFallback = $derived(
 		isDebugMode && activeRenderer === 'pixijs' && resolvedRenderer === 'canvas2d'
 	);
@@ -123,9 +124,12 @@
 	const clampedDebugOffsetMinutes = $derived(clampDebugTimeOffset(debugTimeOffsetMinutes));
 
 	onMount(() => {
+		autoRenderer = detectPreferredRenderer();
+
+		const tickMs = isDebugMode ? 1_000 : 30_000;
 		const timer = window.setInterval(() => {
 			now = new Date();
-		}, 1_000);
+		}, tickMs);
 
 		return () => {
 			window.clearInterval(timer);
@@ -259,6 +263,17 @@
 		}
 
 		return Math.min(100, Math.max(0, Math.round(value)));
+	}
+
+	function detectPreferredRenderer(): WeatherRenderer {
+		if (typeof window === 'undefined') {
+			return 'canvas2d';
+		}
+
+		const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
+		const isNarrow = window.matchMedia('(max-width: 900px)').matches;
+		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		return (isCoarsePointer || isNarrow) && !reducedMotion ? 'pixijs' : 'canvas2d';
 	}
 
 	function clampDebugTimeOffset(value: number): number {
@@ -1914,6 +1929,34 @@
 	}
 
 	@media (max-width: 800px) {
+		.scene,
+		.photo,
+		.gradient,
+		.minimal-city-layer {
+			transition: none;
+		}
+
+		.current {
+			backdrop-filter: none;
+		}
+
+		.city-haze,
+		.skyline-waterline {
+			filter: none;
+		}
+
+		.celestial-body.sun {
+			box-shadow:
+				0 0 14px rgba(255, 208, 128, 0.72),
+				0 0 34px rgba(255, 184, 102, 0.34);
+		}
+
+		.celestial-body.moon {
+			box-shadow:
+				0 0 12px rgba(201, 220, 238, 0.58),
+				0 0 30px rgba(157, 191, 221, 0.26);
+		}
+
 		.hero-controls {
 			width: 100%;
 			justify-items: start;

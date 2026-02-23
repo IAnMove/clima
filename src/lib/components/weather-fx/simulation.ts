@@ -122,12 +122,14 @@ export class WeatherFxSimulation {
 		const windPxPerSecond = lerp(8, 310, windStrength);
 		const precipStrength = clamp(this.input.precipitationProbabilityPercent / 100, 0, 1);
 		const condition = this.input.active ? this.input.condition : 'unknown';
-		const qualityScale = clamp(this.input.qualityScale ?? 1, 0.25, 1);
+		const qualityScale = clamp(this.input.qualityScale ?? 1, 0.12, 1);
 		const particleDensityScale = resolveParticleDensityScale(this.width, this.height) * qualityScale;
 		const atmosphericDensityScale =
 			lerp(0.66, 1, particleDensityScale) * lerp(0.8, 1, qualityScale);
-		const cloudFactor = qualityScale < 0.5 ? 0.82 : 1;
-		const fogFactor = qualityScale < 0.6 ? 0.58 : 1;
+		const cloudFactor =
+			qualityScale < 0.2 ? 0.28 : qualityScale < 0.35 ? 0.46 : qualityScale < 0.5 ? 0.68 : 1;
+		const fogFactor =
+			qualityScale < 0.2 ? 0 : qualityScale < 0.35 ? 0.2 : qualityScale < 0.6 ? 0.42 : 1;
 
 		this.precipLevel = resolvePrecipitationLevel(condition, precipStrength);
 		const rainIntensity = getRainIntensity(condition, precipStrength, this.precipLevel);
@@ -343,7 +345,7 @@ export class WeatherFxSimulation {
 			}
 		}
 
-		const qualityScale = clamp(this.input.qualityScale ?? 1, 0.25, 1);
+		const qualityScale = clamp(this.input.qualityScale ?? 1, 0.12, 1);
 		const splashLimit = Math.round(
 			340 *
 				PRECIPITATION_PARTICLE_MULTIPLIER *
@@ -401,6 +403,7 @@ export class WeatherFxSimulation {
 		condition: WeatherCondition,
 		randomX: boolean
 	): CloudParticle {
+		const qualityScale = clamp(this.input.qualityScale ?? 1, 0.12, 1);
 		const depth = rand(0.52, 1.28);
 		const topBand =
 			condition === 'fog' ? rand(0.06, 0.42) : condition === 'clear' ? rand(0.04, 0.24) : rand(0.05, 0.36);
@@ -409,7 +412,17 @@ export class WeatherFxSimulation {
 		const baseY = this.height * topBand;
 		const density = rand(0.72, 1.22);
 		const puffCount =
-			condition === 'clear' ? randInt(7, 11) : condition === 'storm' ? randInt(11, 16) : randInt(9, 14);
+			qualityScale < 0.2
+				? randInt(3, 5)
+				: qualityScale < 0.35
+					? randInt(4, 7)
+					: qualityScale < 0.5
+						? randInt(5, 9)
+						: condition === 'clear'
+							? randInt(7, 11)
+							: condition === 'storm'
+								? randInt(11, 16)
+								: randInt(9, 14);
 
 		return {
 			x: randomX ? rand(-width, this.width + width) : -width - rand(40, 120),

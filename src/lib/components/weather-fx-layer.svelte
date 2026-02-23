@@ -33,7 +33,9 @@
 		mounted = true;
 		setupQualityTracking();
 		observeContainer();
-		void ensureEngine();
+		if (active) {
+			void ensureEngine();
+		}
 
 		return () => {
 			teardownQualityTracking();
@@ -53,11 +55,15 @@
 		if (!mounted) {
 			return;
 		}
+		if (!active) {
+			destroyEngine();
+			return;
+		}
 		void ensureEngine();
 	});
 
 	$effect(() => {
-		if (!mounted || !engine) {
+		if (!mounted || !engine || !active) {
 			return;
 		}
 
@@ -200,20 +206,30 @@
 		const isNarrow = window.matchMedia('(max-width: 900px)').matches;
 		const isVeryNarrow = window.matchMedia('(max-width: 520px)').matches;
 		const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		const nav = navigator as Navigator & { deviceMemory?: number };
+		const cpuThreads = navigator.hardwareConcurrency ?? 8;
 
 		if (isCoarsePointer || isNarrow) {
-			scale = 0.58;
-		}
-		if (isVeryNarrow) {
 			scale = 0.42;
 		}
+		if (isVeryNarrow) {
+			scale = 0.26;
+		}
 		if (reducedMotion) {
-			scale = Math.min(scale, 0.3);
+			scale = Math.min(scale, 0.18);
 		}
 
-		const nav = navigator as Navigator & { deviceMemory?: number };
 		if (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 4) {
-			scale *= 0.82;
+			scale *= 0.72;
+		}
+		if (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 2) {
+			scale *= 0.62;
+		}
+		if (cpuThreads <= 4) {
+			scale *= 0.8;
+		}
+		if (cpuThreads <= 2) {
+			scale *= 0.72;
 		}
 
 		return clampQualityScale(scale);
@@ -224,7 +240,7 @@
 			return 1;
 		}
 
-		return Math.min(1, Math.max(0.25, value));
+		return Math.min(1, Math.max(0.12, value));
 	}
 
 	async function createEngine(
