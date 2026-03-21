@@ -35,7 +35,7 @@
 		setupQualityTracking();
 		observeContainer();
 		if (active) {
-			void ensureEngine();
+			scheduleEnsureEngine();
 		}
 
 		return () => {
@@ -60,14 +60,17 @@
 		}
 		if (!active) {
 			cancelScheduledEnsure();
-			destroyEngine();
+			invalidatePendingBuilds();
+			if (engine) {
+				engine.setInput(toEngineInput());
+			}
 			return;
 		}
-		void ensureEngine();
+		scheduleEnsureEngine();
 	});
 
 	$effect(() => {
-		if (!mounted || !engine || !active) {
+		if (!mounted || !engine) {
 			return;
 		}
 
@@ -81,7 +84,12 @@
 
 		disconnectObserver();
 		resizeObserver = new ResizeObserver(() => {
-			resizeEngine();
+			if (!active || !engine) {
+				return;
+			}
+			if (!resizeEngine()) {
+				scheduleEnsureEngine();
+			}
 		});
 		resizeObserver.observe(canvasEl.parentElement);
 	}
@@ -94,7 +102,7 @@
 	}
 
 	async function ensureEngine(): Promise<void> {
-		if (!canvasEl) {
+		if (!mounted || !active || !canvasEl) {
 			return;
 		}
 
@@ -124,7 +132,7 @@
 			return;
 		}
 
-		if (buildId !== rendererBuildId) {
+		if (buildId !== rendererBuildId || !mounted || !active) {
 			created.engine.destroy();
 			return;
 		}
@@ -191,7 +199,12 @@
 		ensureRaf = 0;
 	}
 
+	function invalidatePendingBuilds(): void {
+		rendererBuildId += 1;
+	}
+
 	function destroyEngine(): void {
+		invalidatePendingBuilds();
 		if (engine) {
 			engine.destroy();
 			engine = null;
