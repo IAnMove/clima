@@ -3,12 +3,17 @@
 
 	let { children } = $props();
 	const buildCommit = __BUILD_COMMIT__;
+	import { page } from '$app/state';
+	const canonical = $derived(`https://clima.iaen.es${page.url.pathname}`);
 </script>
 
 <svelte:head>
 	<link rel="icon" type="image/x-icon" href={favicon} />
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>Clima Visual</title>
+	<link rel="canonical" href={canonical} />
+	<link rel="alternate" hreflang="en" href={canonical} />
+	<link rel="alternate" hreflang="x-default" href={canonical} />
 </svelte:head>
 
 {@render children()}
