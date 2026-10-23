@@ -8,6 +8,64 @@ interface AemetEnvelope {
 }
 
 const AEMET_BASE_URL = 'https://opendata.aemet.es/opendata/api';
+/** Plazo total (sobre + datos) para un dataset de previsión. */
+const AEMET_DATASET_TIMEOUT_MS = 10_000;
+/** El maestro de municipios es grande y se refresca en segundo plano. */
+const AEMET_MASTER_TIMEOUT_MS = 20_000;
+const AEMET_MAX_CONCURRENCY = 6;
+const AEMET_MAX_QUEUE = 200;
+const AEMET_RATE_LIMIT_COOLDOWN_MS = 30_000;
+
+// Estado compartido por proceso: limita la presión sobre AEMET bajo mucho tráfico.
+let activeAemetRequests = 0;
+const aemetWaiters: Array<() => void> = [];
+let aemetCooldownUntil = 0;
+
+function tripRateLimit(): void {
+	aemetCooldownUntil = Date.now() + AEMET_RATE_LIMIT_COOLDOWN_MS;
+}
+
+async function acquireAemetSlot(signal: AbortSignal): Promise<void> {
+	if (activeAemetRequests < AEMET_MAX_CONCURRENCY) {
+		activeAemetRequests += 1;
+		return;
+	}
+
+	if (aemetWaiters.length >= AEMET_MAX_QUEUE) {
+		throw new Error('AEMET saturado: demasiadas peticiones en cola');
+	}
+
+	if (signal.aborted) {
+		throw new Error('Timeout esperando turno para AEMET');
+	}
+
+	await new Promise<void>((resolve, reject) => {
+		const grant = (): void => {
+			signal.removeEventListener('abort', onAbort);
+			resolve();
+		};
+		const onAbort = (): void => {
+			const index = aemetWaiters.indexOf(grant);
+			if (index >= 0) {
+				aemetWaiters.splice(index, 1);
+			}
+			reject(new Error('Timeout esperando turno para AEMET'));
+		};
+		signal.addEventListener('abort', onAbort, { once: true });
+		aemetWaiters.push(grant);
+	});
+}
+
+function releaseAemetSlot(): void {
+	const next = aemetWaiters.shift();
+	if (next) {
+		// El hueco pasa directamente al siguiente en cola.
+		next();
+		return;
+	}
+
+	activeAemetRequests = Math.max(0, activeAemetRequests - 1);
+}
 
 export class AemetClient {
 	private readonly apiKey: string;
@@ -21,7 +79,7 @@ export class AemetClient {
 	}
 
 	async getMunicipalitiesRaw(): Promise<unknown[]> {
-		const data = await this.fetchDataset<unknown>('/maestro/municipios');
+		const data = await this.fetchDataset<unknown>('/maestro/municipios', AEMET_MASTER_TIMEOUT_MS);
 		return Array.isArray(data) ? data : [];
 	}
 
@@ -37,18 +95,34 @@ export class AemetClient {
 		);
 	}
 
-	private async fetchDataset<T>(path: string): Promise<T> {
-		const envelope = await this.fetchJson<AemetEnvelope>(`${AEMET_BASE_URL}${path}`);
-
-		if (!envelope?.datos) {
-			const message = envelope?.descripcion ?? 'AEMET no devolvió URL de datos';
-			throw new Error(message);
+	private async fetchDataset<T>(path: string, timeoutMs = AEMET_DATASET_TIMEOUT_MS): Promise<T> {
+		if (Date.now() < aemetCooldownUntil) {
+			throw new Error('AEMET está limitando peticiones (429); se reintentará en breve');
 		}
 
-		return this.fetchJson<T>(envelope.datos, false);
+		// Un único plazo para la cola, el sobre y la descarga de datos.
+		const signal = AbortSignal.timeout(timeoutMs);
+		await acquireAemetSlot(signal);
+
+		try {
+			const envelope = await this.fetchJson<AemetEnvelope>(`${AEMET_BASE_URL}${path}`, true, signal);
+
+			if (envelope?.estado === 429) {
+				tripRateLimit();
+			}
+
+			if (!envelope?.datos) {
+				const message = envelope?.descripcion ?? 'AEMET no devolvió URL de datos';
+				throw new Error(message);
+			}
+
+			return await this.fetchJson<T>(envelope.datos, false, signal);
+		} finally {
+			releaseAemetSlot();
+		}
 	}
 
-	private async fetchJson<T>(url: string, includeApiKey = true): Promise<T> {
+	private async fetchJson<T>(url: string, includeApiKey: boolean, signal: AbortSignal): Promise<T> {
 		const response = await fetch(url, {
 			method: 'GET',
 			headers: includeApiKey
@@ -59,8 +133,12 @@ export class AemetClient {
 				: {
 						accept: 'application/json'
 					},
-			signal: AbortSignal.timeout(12_000)
+			signal
 		});
+
+		if (response.status === 429) {
+			tripRateLimit();
+		}
 
 		if (!response.ok) {
 			const body = await decodeResponseText(response);

@@ -6,40 +6,44 @@ import type {
 } from '$lib/domain/ports/weather-provider';
 import type { DailyWeather, HourlyWeather, WeatherCondition, WeatherImage, WeatherReport } from '$lib/domain/weather';
 import { normalizeSearchValue } from '$lib/utils/text';
+import { SwrCache, withTimeout } from '$lib/infrastructure/cache/swr-cache';
 import { AemetClient } from './aemet-client';
 
 type UnknownRecord = Record<string, unknown>;
 
-const CACHE_TTL_MUNICIPALITIES_MS = 6 * 60 * 60 * 1000;
-const CACHE_TTL_IMAGE_MS = 24 * 60 * 60 * 1000;
-const CACHE_TTL_WEATHER_MS = 8 * 60 * 1000;
-const MAX_WEATHER_CACHE_ENTRIES = 200;
+const MUNICIPALITIES_TTL_MS = 6 * 60 * 60 * 1000;
+const MUNICIPALITIES_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+const WEATHER_TTL_MS = 8 * 60 * 1000;
+const WEATHER_STALE_MS = 3 * 60 * 60 * 1000;
+const MAX_WEATHER_CACHE_ENTRIES = 1500;
+const IMAGE_TTL_MS = 24 * 60 * 60 * 1000;
+const IMAGE_MISS_TTL_MS = 60 * 60 * 1000;
+const IMAGE_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_IMAGE_CACHE_ENTRIES = 3000;
+const IMAGE_LOOKUP_BUDGET_MS = 2_500;
+const FAILURE_BACKOFF_MS = 30_000;
 
 export class AemetWeatherProvider implements WeatherProvider {
 	readonly id = 'aemet';
 
-	private municipalitiesCache:
-		| {
-				expiresAt: number;
-				items: Municipality[];
-		  }
-		| undefined;
-
-	private readonly imageCache = new Map<
-		string,
-		{
-			expiresAt: number;
-			image: WeatherImage | null;
-		}
-	>();
-	private readonly weatherCache = new Map<
-		string,
-		{
-			expiresAt: number;
-			report: WeatherReport;
-		}
-	>();
-	private readonly weatherInFlight = new Map<string, Promise<WeatherReport>>();
+	private readonly municipalitiesCache = new SwrCache<Municipality[]>({
+		ttlMs: MUNICIPALITIES_TTL_MS,
+		staleMs: MUNICIPALITIES_STALE_MS,
+		errorTtlMs: FAILURE_BACKOFF_MS,
+		maxEntries: 1
+	});
+	private readonly weatherCache = new SwrCache<WeatherReport>({
+		ttlMs: WEATHER_TTL_MS,
+		staleMs: WEATHER_STALE_MS,
+		errorTtlMs: FAILURE_BACKOFF_MS,
+		maxEntries: MAX_WEATHER_CACHE_ENTRIES
+	});
+	private readonly imageCache = new SwrCache<WeatherImage | null>({
+		ttlMs: (image) => (image ? IMAGE_TTL_MS : IMAGE_MISS_TTL_MS),
+		staleMs: IMAGE_STALE_MS,
+		errorTtlMs: 5 * 60 * 1000,
+		maxEntries: MAX_IMAGE_CACHE_ENTRIES
+	});
 
 	constructor(private readonly client: AemetClient = new AemetClient()) {}
 
@@ -131,32 +135,22 @@ export class AemetWeatherProvider implements WeatherProvider {
 			throw new Error('Código de municipio inválido');
 		}
 
-		const now = Date.now();
-		const cached = this.weatherCache.get(municipalityCode);
-		if (cached && cached.expiresAt > now) {
-			return cached.report;
-		}
+		const report = await this.weatherCache.get(municipalityCode, () =>
+			this.fetchWeatherReport(municipalityCode)
+		);
 
-		const inFlight = this.weatherInFlight.get(municipalityCode);
-		if (inFlight) {
-			return inFlight;
-		}
+		// La imagen pudo resolverse en segundo plano después de cachear el informe.
+		const backgroundImage =
+			report.backgroundImage ??
+			this.imageCache.peek(imageCacheKey(report.location.name, report.location.province)) ??
+			null;
 
-		const request = this.fetchWeatherReport(municipalityCode)
-			.then((report) => {
-				this.weatherCache.set(municipalityCode, {
-					expiresAt: Date.now() + CACHE_TTL_WEATHER_MS,
-					report
-				});
-				this.pruneWeatherCache();
-				return report;
-			})
-			.finally(() => {
-				this.weatherInFlight.delete(municipalityCode);
-			});
-
-		this.weatherInFlight.set(municipalityCode, request);
-		return request;
+		// Recalcular la hora actual: el informe puede venir de caché (fresco o stale).
+		return {
+			...report,
+			current: pickCurrentHour(report.hourly) ?? report.current,
+			backgroundImage
+		};
 	}
 
 	private async fetchWeatherReport(municipalityCode: string): Promise<WeatherReport> {
@@ -169,7 +163,13 @@ export class AemetWeatherProvider implements WeatherProvider {
 		const hourly = parseHourlyWeather(hourlyRaw);
 		const daily = parseDailyWeather(dailyRaw);
 		const current = pickCurrentHour(hourly);
-		const backgroundImage = await this.getCityImage(location.name, location.province);
+		// La imagen es decorativa: no puede bloquear la previsión. Si no llega a tiempo,
+		// la búsqueda continúa en segundo plano y queda en caché para la siguiente petición.
+		const backgroundImage = await withTimeout(
+			this.getCityImage(location.name, location.province),
+			IMAGE_LOOKUP_BUDGET_MS,
+			null
+		);
 
 		return {
 			source: this.id,
@@ -180,29 +180,6 @@ export class AemetWeatherProvider implements WeatherProvider {
 			daily,
 			backgroundImage
 		};
-	}
-
-	private pruneWeatherCache(): void {
-		const now = Date.now();
-
-		for (const [cacheKey, entry] of this.weatherCache.entries()) {
-			if (entry.expiresAt <= now) {
-				this.weatherCache.delete(cacheKey);
-			}
-		}
-
-		if (this.weatherCache.size <= MAX_WEATHER_CACHE_ENTRIES) {
-			return;
-		}
-
-		const overflow = this.weatherCache.size - MAX_WEATHER_CACHE_ENTRIES;
-		const keys = [...this.weatherCache.keys()];
-		for (let index = 0; index < overflow; index += 1) {
-			const key = keys[index];
-			if (key) {
-				this.weatherCache.delete(key);
-			}
-		}
 	}
 
 	async listProvinces(): Promise<string[]> {
@@ -223,12 +200,11 @@ export class AemetWeatherProvider implements WeatherProvider {
 		);
 	}
 
-	private async getMunicipalities(): Promise<Municipality[]> {
-		const now = Date.now();
-		if (this.municipalitiesCache && this.municipalitiesCache.expiresAt > now) {
-			return this.municipalitiesCache.items;
-		}
+	private getMunicipalities(): Promise<Municipality[]> {
+		return this.municipalitiesCache.get('all', () => this.loadMunicipalities());
+	}
 
+	private async loadMunicipalities(): Promise<Municipality[]> {
 		const raw = await this.client.getMunicipalitiesRaw();
 		const mapped = raw
 			.map((item) => mapMunicipality(item))
@@ -242,10 +218,10 @@ export class AemetWeatherProvider implements WeatherProvider {
 				return a.name.localeCompare(b.name, 'es');
 			});
 
-		this.municipalitiesCache = {
-			expiresAt: now + CACHE_TTL_MUNICIPALITIES_MS,
-			items: mapped
-		};
+		if (!mapped.length) {
+			// No cachear un maestro vacío: se trata como fallo y se sigue sirviendo el anterior.
+			throw new Error('AEMET devolvió un maestro de municipios vacío');
+		}
 
 		return mapped;
 	}
@@ -321,49 +297,36 @@ export class AemetWeatherProvider implements WeatherProvider {
 		};
 	}
 
-	private async getCityImage(name: string, province: string | null): Promise<WeatherImage | null> {
-		const cacheKey = normalizeSearchValue(`${name} ${province ?? ''}`);
-		const cacheHit = this.imageCache.get(cacheKey);
-		const now = Date.now();
-
-		if (cacheHit && cacheHit.expiresAt > now) {
-			return cacheHit.image;
-		}
-
-		const searchQueries = buildLandscapeQueries(name, province);
-
-		for (const query of searchQueries) {
-			const landscapeImage = await fetchFlickrLandscapeImage(query);
-			if (landscapeImage) {
-				this.imageCache.set(cacheKey, {
-					expiresAt: now + CACHE_TTL_IMAGE_MS,
-					image: landscapeImage
-				});
-				return landscapeImage;
-			}
-		}
-
-		const candidates = buildWikipediaTitleCandidates(name, province);
-		const languages = ['es', 'en'];
-		for (const language of languages) {
-			for (const title of candidates) {
-				const fallbackImage = await fetchWikipediaImage(language, title);
-				if (fallbackImage) {
-					this.imageCache.set(cacheKey, {
-						expiresAt: now + CACHE_TTL_IMAGE_MS,
-						image: fallbackImage
-					});
-					return fallbackImage;
-				}
-			}
-		}
-
-		this.imageCache.set(cacheKey, {
-			expiresAt: now + CACHE_TTL_IMAGE_MS,
-			image: null
-		});
-		return null;
+	private getCityImage(name: string, province: string | null): Promise<WeatherImage | null> {
+		return this.imageCache.get(imageCacheKey(name, province), () =>
+			lookupCityImage(name, province)
+		);
 	}
+}
+
+function imageCacheKey(name: string, province: string | null): string {
+	return normalizeSearchValue(`${name} ${province ?? ''}`);
+}
+
+async function lookupCityImage(name: string, province: string | null): Promise<WeatherImage | null> {
+	for (const query of buildLandscapeQueries(name, province)) {
+		const landscapeImage = await fetchFlickrLandscapeImage(query);
+		if (landscapeImage) {
+			return landscapeImage;
+		}
+	}
+
+	const candidates = buildWikipediaTitleCandidates(name, province);
+	for (const language of ['es', 'en']) {
+		for (const title of candidates) {
+			const fallbackImage = await fetchWikipediaImage(language, title);
+			if (fallbackImage) {
+				return fallbackImage;
+			}
+		}
+	}
+
+	return null;
 }
 
 function mapMunicipality(input: unknown): Municipality | null {
