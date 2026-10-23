@@ -7,15 +7,34 @@ export interface PageSeo {
 	description: string;
 	canonical: string;
 	robots: 'index,follow' | 'noindex,follow';
+	image?: string | null;
+	jsonLd?: Record<string, unknown> | null;
 }
+
+const SITE_NAME = 'Clima Visual';
+const HOME_DESCRIPTION =
+	'Consulta el tiempo en los municipios de España: temperatura, probabilidad de lluvia, viento y previsión por horas y días. Datos de AEMET.';
 
 export const homeSeo: PageSeo = {
 	title: 'Tiempo por municipio en España | Clima Visual',
-	description:
-		'Consulta el tiempo en los municipios de España: temperatura, probabilidad de lluvia, viento y previsión por horas y días. Datos de AEMET.',
+	description: HOME_DESCRIPTION,
 	canonical: `${SITE_ORIGIN}/`,
-	robots: 'index,follow'
+	robots: 'index,follow',
+	jsonLd: {
+		'@context': 'https://schema.org',
+		'@type': 'WebSite',
+		name: SITE_NAME,
+		url: `${SITE_ORIGIN}/`,
+		inLanguage: 'es-ES',
+		description: HOME_DESCRIPTION
+	}
 };
+
+/** Serializa JSON-LD como <script>, escapando `<` para evitar inyección de HTML. */
+export function jsonLdScript(data: Record<string, unknown>): string {
+	const json = JSON.stringify(data).replace(/</g, '\\u003c');
+	return `<script type="application/ld+json">${json}</script>`;
+}
 
 export function isPageSeo(value: unknown): value is PageSeo {
 	if (!value || typeof value !== 'object') {
@@ -27,7 +46,11 @@ export function isPageSeo(value: unknown): value is PageSeo {
 		typeof record.title === 'string' &&
 		typeof record.description === 'string' &&
 		typeof record.canonical === 'string' &&
-		(record.robots === 'index,follow' || record.robots === 'noindex,follow')
+		(record.robots === 'index,follow' || record.robots === 'noindex,follow') &&
+		(record.image === undefined || record.image === null || typeof record.image === 'string') &&
+		(record.jsonLd === undefined ||
+			record.jsonLd === null ||
+			(typeof record.jsonLd === 'object' && !Array.isArray(record.jsonLd)))
 	);
 }
 
@@ -70,7 +93,8 @@ export function buildCitySeo(citySlug: string, payload: unknown, isDebugMode: bo
 		status === 'ok' && canonicalPath?.startsWith('/')
 			? `${SITE_ORIGIN}${canonicalPath}`
 			: `${SITE_ORIGIN}/${toSlug(citySlug) || encodeURIComponent(citySlug)}`;
-	const noindex = isDebugMode || status === 'not_found' || status === 'ambiguous';
+	// Cualquier estado distinto de 'ok' (not_found, ambiguous, error o desconocido) no se indexa.
+	const noindex = isDebugMode || status !== 'ok';
 	const title =
 		status === 'not_found'
 			? `No encontramos ${label} | Clima Visual`
@@ -84,11 +108,62 @@ export function buildCitySeo(citySlug: string, payload: unknown, isDebugMode: bo
 				? `Hay varios municipios llamados ${label}. Elige la provincia para ver el tiempo.`
 				: `Tiempo en ${place}: temperatura, probabilidad de lluvia, viento y previsión por horas y días. Datos de AEMET.`;
 
+	if (noindex) {
+		return { title, description, canonical, robots: 'noindex,follow', image: null, jsonLd: null };
+	}
+
+	const latitude = readFirstNumber([location, municipality], ['latitude', 'lat']);
+	const longitude = readFirstNumber([location, municipality], ['longitude', 'lon', 'lng']);
+	const hasGeo =
+		latitude !== null &&
+		longitude !== null &&
+		Math.abs(latitude) <= 90 &&
+		Math.abs(longitude) <= 180;
+
+	const placeNode: Record<string, unknown> = {
+		'@type': 'Place',
+		'@id': `${canonical}#place`,
+		name,
+		address: {
+			'@type': 'PostalAddress',
+			addressLocality: name,
+			...(province ? { addressRegion: province } : {}),
+			addressCountry: 'ES'
+		},
+		...(hasGeo ? { geo: { '@type': 'GeoCoordinates', latitude, longitude } } : {})
+	};
+
 	return {
 		title,
 		description,
 		canonical,
-		robots: noindex ? 'noindex,follow' : 'index,follow'
+		robots: 'index,follow',
+		image: readHttpsUrl(asRecord(report?.backgroundImage)?.url),
+		jsonLd: {
+			'@context': 'https://schema.org',
+			'@graph': [
+				{
+					'@type': 'WebPage',
+					'@id': canonical,
+					url: canonical,
+					name: title,
+					description,
+					inLanguage: 'es-ES',
+					isPartOf: { '@type': 'WebSite', name: SITE_NAME, url: `${SITE_ORIGIN}/` },
+					about: { '@id': `${canonical}#place` },
+					breadcrumb: { '@id': `${canonical}#breadcrumb` }
+				},
+				placeNode,
+				{
+					'@type': 'BreadcrumbList',
+					'@id': `${canonical}#breadcrumb`,
+					itemListElement: [
+						{ '@type': 'ListItem', position: 1, name: 'Inicio', item: `${SITE_ORIGIN}/` },
+						{ '@type': 'ListItem', position: 2, name: place, item: canonical }
+					]
+				}
+			]
+		}
 	};
 }
 
@@ -134,6 +209,32 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 	}
 
 	return value as Record<string, unknown>;
+}
+
+function readFirstNumber(
+	records: Array<Record<string, unknown> | null>,
+	keys: string[]
+): number | null {
+	for (const record of records) {
+		for (const key of keys) {
+			const value = record?.[key];
+			if (typeof value === 'number' && Number.isFinite(value)) {
+				return value;
+			}
+		}
+	}
+	return null;
+}
+
+function readHttpsUrl(value: unknown): string | null {
+	const raw = readString(value);
+	if (!raw) return null;
+	try {
+		const parsed = new URL(raw);
+		return parsed.protocol === 'https:' ? parsed.href : null;
+	} catch {
+		return null;
+	}
 }
 
 function readString(value: unknown): string | null {

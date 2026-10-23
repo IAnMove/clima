@@ -68,13 +68,13 @@ export const GET: RequestHandler = async ({ params, url }) => {
 			}
 		);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : 'Error inesperado';
+		console.error('Error obteniendo el tiempo', params.city, error);
 		return json(
 			{
 				status: 'error',
-				message
+				message: 'No se pudo obtener la información meteorológica.'
 			},
-			{ status: 500 }
+			{ status: 500, headers: { 'cache-control': 'no-store' } }
 		);
 	}
 };
