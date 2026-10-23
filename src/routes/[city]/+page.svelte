@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { onDestroy, onMount } from 'svelte';
 	import WeatherFxLayer from '$lib/components/weather-fx-layer.svelte';
 	import type { WeatherRenderer } from '$lib/components/weather-fx/types';
@@ -24,8 +24,32 @@
 	type FlickrFeedResponse = {
 		items?: FlickrFeedItem[];
 	};
+	type ViewMode = 'photo' | 'minimal' | 'all-info';
+	type IconName =
+		| 'arrow-left'
+		| 'photo'
+		| 'city'
+		| 'list'
+		| 'image'
+		| 'droplet'
+		| 'umbrella'
+		| 'humidity'
+		| 'wind'
+		| 'pin'
+		| 'chevron-left'
+		| 'chevron-right'
+		| 'refresh'
+		| 'alert'
+		| 'search'
+		| 'shuffle'
+		| 'upload'
+		| 'undo'
+		| 'clock'
+		| 'calendar'
+		| 'home'
+		| 'external';
 
-	let mode = $state<'photo' | 'minimal' | 'all-info'>('photo');
+	let mode = $state<ViewMode>('photo');
 	let hourlyPage = $state(0);
 	let dailyPage = $state(0);
 	let forcedCondition = $state<WeatherCondition | null>(null);
@@ -47,6 +71,11 @@
 	let provinceMunicipalities = $state<Municipality[]>([]);
 	let loadingProvinceMunicipalities = $state(false);
 	let provinceMunicipalityError = $state<string | null>(null);
+	let prefersReducedMotion = $state(false);
+	let retrying = $state(false);
+	let imageMenuWrap = $state<HTMLDivElement | null>(null);
+	let imageMenuToggleEl = $state<HTMLButtonElement | null>(null);
+
 	const availableConditions: WeatherCondition[] = [
 		'clear',
 		'cloudy',
@@ -58,6 +87,11 @@
 	];
 	const conditionSet = new Set<WeatherCondition>(availableConditions);
 	const availableRenderers: WeatherRenderer[] = ['canvas2d', 'pixijs'];
+	const modeOptions: Array<{ value: ViewMode; label: string; icon: IconName }> = [
+		{ value: 'photo', label: 'Foto', icon: 'photo' },
+		{ value: 'minimal', label: 'Ilustración', icon: 'city' },
+		{ value: 'all-info', label: 'Detalle', icon: 'list' }
+	];
 
 	const payload = $derived((data.payload ?? {}) as GenericPayload);
 	const status = $derived(payload.status ?? 'error');
@@ -98,8 +132,14 @@
 	const currentPrecipitationProbability = $derived(
 		typeof report?.current?.precipitationProbabilityPercent === 'number' &&
 			Number.isFinite(report.current.precipitationProbabilityPercent)
-				? report.current.precipitationProbabilityPercent
-				: 0
+			? report.current.precipitationProbabilityPercent
+			: 0
+	);
+	const currentHumidity = $derived(
+		typeof report?.current?.humidityPercent === 'number' &&
+			Number.isFinite(report.current.humidityPercent)
+			? clampPercent(report.current.humidityPercent)
+			: null
 	);
 	const activePrecipitationProbability = $derived(
 		isDebugMode
@@ -109,6 +149,7 @@
 	const precipitationLevelLabel = $derived(
 		resolvePrecipitationLevelLabel(activeWeatherCondition, activePrecipitationProbability)
 	);
+	const fxActive = $derived(mode !== 'all-info' && (isDebugMode || !prefersReducedMotion));
 
 	const hourlyChunks = $derived(chunk(hourly, 12));
 	const dailyChunks = $derived(chunk(daily, 5));
@@ -124,6 +165,7 @@
 	);
 	const currentHourDecimal = $derived(activeClock.getHours() + activeClock.getMinutes() / 60);
 	const isDaytime = $derived(currentHourDecimal >= 6 && currentHourDecimal < 18);
+	const showNightIcon = $derived(visualsReady && !isDaytime);
 	const daylightStrength = $derived(resolveDaylightStrength(currentHourDecimal));
 	const celestialProgress = $derived(resolveCelestialProgress(currentHourDecimal, isDaytime));
 	const celestialXPercent = $derived(8 + 84 * celestialProgress);
@@ -140,6 +182,13 @@
 		visualsReady = true;
 		autoRenderer = detectPreferredRenderer();
 
+		const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const syncReducedMotion = () => {
+			prefersReducedMotion = reducedMotionQuery.matches;
+		};
+		syncReducedMotion();
+		reducedMotionQuery.addEventListener('change', syncReducedMotion);
+
 		const tickMs = isDebugMode ? 1_000 : 60_000;
 		const timer = window.setInterval(() => {
 			now = new Date();
@@ -147,6 +196,7 @@
 
 		return () => {
 			window.clearInterval(timer);
+			reducedMotionQuery.removeEventListener('change', syncReducedMotion);
 		};
 	});
 
@@ -236,9 +286,9 @@
 	function resolvePrecipitationLevelLabel(
 		condition: WeatherCondition,
 		precipitationProbabilityPercent: number
-	): 'baja' | 'media' | 'alta' | 'sin precipitacion' {
+	): 'baja' | 'media' | 'alta' | 'sin precipitación' {
 		if (condition !== 'rain' && condition !== 'snow' && condition !== 'storm') {
-			return 'sin precipitacion';
+			return 'sin precipitación';
 		}
 
 		if (precipitationProbabilityPercent < 30) {
@@ -248,6 +298,10 @@
 			return 'media';
 		}
 		return 'alta';
+	}
+
+	function capitalize(value: string): string {
+		return value ? value.charAt(0).toLocaleUpperCase('es-ES') + value.slice(1) : value;
 	}
 
 	function formatTemp(value: unknown): string {
@@ -459,6 +513,22 @@
 		}
 	}
 
+	function onWindowPointerDown(event: PointerEvent): void {
+		if (!imageMenuOpen || !imageMenuWrap) {
+			return;
+		}
+		if (event.target instanceof Node && !imageMenuWrap.contains(event.target)) {
+			imageMenuOpen = false;
+		}
+	}
+
+	function onWindowKeydown(event: KeyboardEvent): void {
+		if (event.key === 'Escape' && imageMenuOpen) {
+			imageMenuOpen = false;
+			imageMenuToggleEl?.focus();
+		}
+	}
+
 	async function applyRandomImage(): Promise<void> {
 		if (loadingRandomImage) {
 			return;
@@ -483,7 +553,7 @@
 			);
 
 			if (!candidates.length) {
-				imageMenuError = 'No encontre otra imagen de esta ciudad ahora';
+				imageMenuError = 'No encontré otra imagen de esta ciudad ahora mismo';
 				return;
 			}
 
@@ -717,9 +787,147 @@
 		event.preventDefault();
 		void loadProvinceMunicipalities();
 	}
+
+	async function retryLoad(): Promise<void> {
+		if (retrying) {
+			return;
+		}
+		retrying = true;
+		try {
+			await invalidateAll();
+		} finally {
+			retrying = false;
+		}
+	}
 </script>
 
-<main class="page">
+<svelte:window onpointerdown={onWindowPointerDown} onkeydown={onWindowKeydown} />
+
+{#snippet icon(name: IconName)}
+	<svg
+		class="ico"
+		viewBox="0 0 24 24"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="1.8"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+		aria-hidden="true"
+	>
+		{#if name === 'arrow-left'}
+			<path d="M19 12H5M11 18l-6-6 6-6" />
+		{:else if name === 'photo'}
+			<rect x="3" y="5" width="18" height="14" rx="2.5" />
+			<circle cx="9" cy="10" r="1.6" />
+			<path d="M21 16l-5-5-8 8" />
+		{:else if name === 'city'}
+			<path d="M3 21h18M5 21V10l4-2v13M9 21V5l6 3v13M15 21v-9l4 2v7" />
+		{:else if name === 'list'}
+			<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
+		{:else if name === 'image'}
+			<rect x="3" y="3" width="18" height="18" rx="3" />
+			<circle cx="8.5" cy="8.5" r="1.5" />
+			<path d="M21 15l-5-5L5 21" />
+		{:else if name === 'droplet'}
+			<path d="M12 3.2s6 6.4 6 10.8a6 6 0 0 1-12 0c0-4.4 6-10.8 6-10.8z" />
+		{:else if name === 'umbrella'}
+			<path d="M3 12a9 9 0 0 1 18 0H3z" />
+			<path d="M12 12v6a2 2 0 0 1-4 0" />
+		{:else if name === 'humidity'}
+			<path d="M12 3.2s6 6.4 6 10.8a6 6 0 0 1-12 0c0-4.4 6-10.8 6-10.8z" />
+			<path d="M8.5 14.5c1.2.8 2.3.8 3.5 0s2.3-.8 3.5 0" />
+		{:else if name === 'wind'}
+			<path d="M3 8h10.5a2.5 2.5 0 1 0-2.5-2.5M3 12h15.5a2.5 2.5 0 1 1-2.5 2.5M3 16h7" />
+		{:else if name === 'pin'}
+			<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z" />
+			<circle cx="12" cy="9.5" r="2.5" />
+		{:else if name === 'chevron-left'}
+			<path d="M15 18l-6-6 6-6" />
+		{:else if name === 'chevron-right'}
+			<path d="M9 18l6-6-6-6" />
+		{:else if name === 'refresh'}
+			<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />
+		{:else if name === 'alert'}
+			<circle cx="12" cy="12" r="9" />
+			<path d="M12 7.5v5.5M12 16.5h.01" />
+		{:else if name === 'search'}
+			<circle cx="11" cy="11" r="6.5" />
+			<path d="M20 20l-4.2-4.2" />
+		{:else if name === 'shuffle'}
+			<path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" />
+		{:else if name === 'upload'}
+			<path d="M12 15V4M7 9l5-5 5 5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+		{:else if name === 'undo'}
+			<path d="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+		{:else if name === 'clock'}
+			<circle cx="12" cy="12" r="9" />
+			<path d="M12 7v5l3 2" />
+		{:else if name === 'calendar'}
+			<rect x="3.5" y="5" width="17" height="15" rx="2.5" />
+			<path d="M3.5 10h17M8 3v4M16 3v4" />
+		{:else if name === 'home'}
+			<path d="M3 11l9-7 9 7M5 10v10h14V10" />
+		{:else if name === 'external'}
+			<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+		{/if}
+	</svg>
+{/snippet}
+
+{#snippet weatherIcon(condition: WeatherCondition, night: boolean)}
+	<svg
+		class="wi"
+		viewBox="0 0 48 48"
+		fill="none"
+		stroke="currentColor"
+		stroke-width="2.4"
+		stroke-linecap="round"
+		stroke-linejoin="round"
+		aria-hidden="true"
+	>
+		{#if condition === 'clear' && night}
+			<path class="wi-moon" d="M36 29.5A13 13 0 1 1 18.5 12a10.5 10.5 0 0 0 17.5 17.5z" />
+			<path class="wi-star" d="M35 9v4M33 11h4M40 18v2M39 19h2" />
+		{:else if condition === 'clear'}
+			<circle class="wi-sun-core" cx="24" cy="24" r="8" />
+			<path
+				class="wi-sun"
+				d="M24 6v4M24 38v4M6 24h4M38 24h4M11.3 11.3l2.8 2.8M33.9 33.9l2.8 2.8M11.3 36.7l2.8-2.8M33.9 14.1l2.8-2.8"
+			/>
+		{:else if condition === 'cloudy'}
+			<path class="wi-cloud" d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" />
+		{:else if condition === 'rain'}
+			<g transform="translate(0 -6)">
+				<path class="wi-cloud" d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" />
+			</g>
+			<path class="wi-rain" d="M18 35l-2 6M26 35l-2 6M34 35l-2 6" />
+		{:else if condition === 'snow'}
+			<g transform="translate(0 -6)">
+				<path class="wi-cloud" d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" />
+			</g>
+			<circle class="wi-snow" cx="17" cy="38" r="1.8" />
+			<circle class="wi-snow" cx="25" cy="42" r="1.8" />
+			<circle class="wi-snow" cx="33" cy="38" r="1.8" />
+		{:else if condition === 'storm'}
+			<g transform="translate(0 -6)">
+				<path class="wi-cloud" d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" />
+			</g>
+			<path class="wi-bolt" d="M26 30l-5 8h6l-4 7" />
+		{:else if condition === 'fog'}
+			<g transform="translate(0 -7)">
+				<path class="wi-cloud" d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" />
+			</g>
+			<path class="wi-fog" d="M9 35h30M13 41h22" />
+		{:else}
+			<circle class="wi-sun-core" cx="16" cy="16" r="5.5" />
+			<path class="wi-sun" d="M16 5v2.5M5 16h2.5M8.2 8.2l1.8 1.8M23.8 8.2 22 10" />
+			<g transform="translate(4 2)">
+				<path class="wi-cloud" d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" />
+			</g>
+		{/if}
+	</svg>
+{/snippet}
+
+<main id="contenido" class="page" tabindex="-1">
 	{#if status === 'ok' && report}
 		<div
 			class={`scene mode-${mode} condition-${activeWeatherCondition} ${compactMode ? 'compact' : ''}`}
@@ -861,352 +1069,607 @@
 					windKmh={currentWindKmh}
 					precipitationProbabilityPercent={activePrecipitationProbability}
 					renderer={activeRenderer}
-					active={mode !== 'all-info'}
+					active={fxActive}
 					onRendererResolved={(resolved) => (resolvedRenderer = resolved)}
 				/>
 			</div>
 
 			<div class={`content ${compactMode ? 'content-compact' : ''}`}>
-				<header class="hero">
-					<div>
-						<p class="chip">Fuente: {payload.provider?.toUpperCase() ?? 'API'}</p>
-						<h1>Tiempo en {placeName}</h1>
-						<p class="subtitle">
-							{report.location?.province ?? municipality?.province ?? 'Espa\u00f1a'} &middot; c&oacute;digo
-							{report.location?.code ?? municipality?.code}
-						</p>
-					</div>
+				<header class="topbar">
+					<a class="home-link" href="/">
+						{@render icon('arrow-left')}
+						<span>Clima Visual</span>
+					</a>
 
 					<div class="hero-controls">
 						<div class="mode-switch" role="group" aria-label="Modo visual">
-							<button class:active={mode === 'photo'} type="button" onclick={() => (mode = 'photo')}>
-								Foto
-							</button>
-							<button
-								class:active={mode === 'minimal'}
-								type="button"
-								onclick={() => (mode = 'minimal')}
-							>
-								Minimal
-							</button>
-							<button
-								class:active={mode === 'all-info'}
-								type="button"
-								onclick={() => (mode = 'all-info')}
-							>
-								All info
-							</button>
+							{#each modeOptions as option (option.value)}
+								<button
+									type="button"
+									aria-pressed={mode === option.value}
+									onclick={() => (mode = option.value)}
+								>
+									{@render icon(option.icon)}
+									<span>{option.label}</span>
+								</button>
+							{/each}
 						</div>
 
 						{#if mode === 'photo'}
-							<div class="image-menu-wrap">
-								<button class="image-menu-toggle" type="button" onclick={toggleImageMenu}>
-									Cambiar imagen
+							<div class="image-menu-wrap" bind:this={imageMenuWrap}>
+								<button
+									class="image-menu-toggle"
+									type="button"
+									onclick={toggleImageMenu}
+									aria-expanded={imageMenuOpen}
+									aria-controls="image-menu"
+									bind:this={imageMenuToggleEl}
+								>
+									{@render icon('image')}
+									<span>Cambiar imagen</span>
 								</button>
 								{#if imageMenuOpen}
-									<div class="image-menu">
+									<div id="image-menu" class="image-menu" role="group" aria-label="Opciones de imagen de fondo">
 										<button
 											type="button"
-											class="image-menu-action"
+											class="menu-item"
 											onclick={() => void applyRandomImage()}
 											disabled={loadingRandomImage}
+											aria-busy={loadingRandomImage}
 										>
-											{loadingRandomImage ? 'Buscando...' : 'Aleatoria de esta ciudad'}
+											{#if loadingRandomImage}
+												<span class="spinner menu-spinner" aria-hidden="true"></span>
+												<span class="menu-title">Buscando…</span>
+											{:else}
+												{@render icon('shuffle')}
+												<span class="menu-title">Aleatoria de esta ciudad</span>
+											{/if}
 										</button>
-										<div class="image-menu-file">
-											<label for="local-image-input">Imagen local (sin subir al server)</label>
+										<label class="menu-item menu-file">
+											{@render icon('upload')}
+											<span class="menu-text">
+												<span class="menu-title">Imagen de tu dispositivo</span>
+												<span class="menu-note">No se sube al servidor</span>
+											</span>
 											<input
-												id="local-image-input"
+												class="visually-hidden"
 												type="file"
 												accept="image/*"
 												onchange={onCustomImageFileChange}
 											/>
-										</div>
-										<button type="button" class="image-menu-reset" onclick={restoreServerImage}>
-											Volver a original
+										</label>
+										<button
+											type="button"
+											class="menu-item"
+											onclick={restoreServerImage}
+											disabled={!customImage}
+										>
+											{@render icon('undo')}
+											<span class="menu-title">Volver a la original</span>
 										</button>
 										{#if imageMenuError}
-											<p class="image-menu-error">{imageMenuError}</p>
+											<p class="image-menu-error" role="alert">
+												{@render icon('alert')}
+												{imageMenuError}
+											</p>
 										{/if}
 									</div>
 								{/if}
 							</div>
 						{/if}
-
-						{#if isDebugMode}
-							<section class="debug-panel">
-								<p class="debug-title">Debug clima</p>
-								<p class="debug-label">Renderer</p>
-								<div class="renderer-buttons">
-									{#each availableRenderers as rendererOption}
-										<button
-											type="button"
-											class:selected={rendererOption === activeRenderer}
-											onclick={() => (selectedRenderer = rendererOption)}
-										>
-											{rendererOption}
-										</button>
-									{/each}
-								</div>
-								<p class="debug-info">
-									Activo: <strong>{resolvedRenderer}</strong>
-									{#if isRendererFallback}
-										<span>(fallback por incompatibilidad WebGL/Pixi)</span>
-									{/if}
-								</p>
-								<p class="debug-label">Condici&oacute;n</p>
-								<div class="debug-buttons">
-									{#each availableConditions as condition}
-										<button
-											type="button"
-											class:selected={condition === activeWeatherCondition}
-											onclick={() => (forcedCondition = condition)}
-										>
-											{condition}
-										</button>
-									{/each}
-								</div>
-								<div class="debug-precipitation">
-									<div class="debug-precipitation-head">
-										<p class="debug-label">% precipitaci&oacute;n</p>
-										<strong>{activePrecipitationProbability}%</strong>
-									</div>
-									<input
-										class="debug-precipitation-range"
-										type="range"
-										min="0"
-										max="100"
-										step="1"
-										value={activePrecipitationProbability}
-										oninput={onDebugPrecipitationInput}
-									/>
-									<input
-										class="debug-precipitation-number"
-										type="number"
-										min="0"
-										max="100"
-										step="1"
-										value={activePrecipitationProbability}
-										oninput={onDebugPrecipitationInput}
-									/>
-								</div>
-								<div class="debug-time">
-									<div class="debug-time-head">
-										<p class="debug-label">Reloj minimal</p>
-										<strong>{visualsReady ? debugClockLabel : '--:--'}</strong>
-									</div>
-									<p class="debug-time-info">
-										Real: {visualsReady ? formatClockLabel(now) : '--:--'} &middot; offset: {debugOffsetLabel}
-									</p>
-									<input
-										class="debug-time-number"
-										type="number"
-										min="-10080"
-										max="10080"
-										step="1"
-										value={clampedDebugOffsetMinutes}
-										oninput={onDebugTimeOffsetInput}
-										aria-label="Offset en minutos para sol y luna"
-									/>
-									<div class="debug-time-buttons">
-										<button type="button" onclick={() => shiftDebugTimeOffset(-60)}>-60m</button>
-										<button type="button" onclick={() => shiftDebugTimeOffset(-15)}>-15m</button>
-										<button type="button" onclick={() => shiftDebugTimeOffset(15)}>+15m</button>
-										<button type="button" onclick={() => shiftDebugTimeOffset(60)}>+60m</button>
-										<button type="button" onclick={() => (debugTimeOffsetMinutes = 0)}>Ahora</button>
-									</div>
-								</div>
-							</section>
-						{/if}
 					</div>
 				</header>
 
-				<section class="current">
-					<div class="big-temp">{formatTemp(report.current?.temperatureC)}</div>
-					<div class="meta">
+				<div class="title-block">
+					<p class="chip">Fuente: {payload.provider?.toUpperCase() ?? 'API'}</p>
+					<h1>Tiempo en {placeName}</h1>
+					<p class="subtitle">
+						{@render icon('pin')}
+						<span>
+							{report.location?.province ?? municipality?.province ?? 'Espa\u00f1a'} &middot; c&oacute;digo
+							{report.location?.code ?? municipality?.code}
+						</span>
+					</p>
+				</div>
+
+				{#if isDebugMode}
+					<section class="debug-panel" aria-label="Panel de depuración">
+						<p class="debug-title">Debug clima</p>
+						<p class="debug-label">Renderer</p>
+						<div class="renderer-buttons">
+							{#each availableRenderers as rendererOption}
+								<button
+									type="button"
+									class:selected={rendererOption === activeRenderer}
+									aria-pressed={rendererOption === activeRenderer}
+									onclick={() => (selectedRenderer = rendererOption)}
+								>
+									{rendererOption}
+								</button>
+							{/each}
+						</div>
+						<p class="debug-info">
+							Activo: <strong>{resolvedRenderer}</strong>
+							{#if isRendererFallback}
+								<span>(alternativa por incompatibilidad WebGL/Pixi)</span>
+							{/if}
+						</p>
+						<p class="debug-label">Condici&oacute;n</p>
+						<div class="debug-buttons">
+							{#each availableConditions as condition}
+								<button
+									type="button"
+									class:selected={condition === activeWeatherCondition}
+									aria-pressed={condition === activeWeatherCondition}
+									onclick={() => (forcedCondition = condition)}
+								>
+									{condition}
+								</button>
+							{/each}
+						</div>
+						<div class="debug-precipitation">
+							<div class="debug-head">
+								<p class="debug-label">% precipitaci&oacute;n</p>
+								<strong>{activePrecipitationProbability}%</strong>
+							</div>
+							<input
+								class="debug-range"
+								type="range"
+								min="0"
+								max="100"
+								step="1"
+								value={activePrecipitationProbability}
+								oninput={onDebugPrecipitationInput}
+								aria-label="Porcentaje de precipitación"
+							/>
+							<input
+								class="debug-number debug-number-short"
+								type="number"
+								min="0"
+								max="100"
+								step="1"
+								value={activePrecipitationProbability}
+								oninput={onDebugPrecipitationInput}
+								aria-label="Porcentaje de precipitación (número)"
+							/>
+						</div>
+						<div class="debug-time">
+							<div class="debug-head">
+								<p class="debug-label">Reloj ilustración</p>
+								<strong>{visualsReady ? debugClockLabel : '--:--'}</strong>
+							</div>
+							<p class="debug-info">
+								Real: {visualsReady ? formatClockLabel(now) : '--:--'} &middot; desfase: {debugOffsetLabel}
+							</p>
+							<input
+								class="debug-number"
+								type="number"
+								min="-10080"
+								max="10080"
+								step="1"
+								value={clampedDebugOffsetMinutes}
+								oninput={onDebugTimeOffsetInput}
+								aria-label="Desfase en minutos para sol y luna"
+							/>
+							<div class="debug-time-buttons">
+								<button type="button" onclick={() => shiftDebugTimeOffset(-60)}>-60m</button>
+								<button type="button" onclick={() => shiftDebugTimeOffset(-15)}>-15m</button>
+								<button type="button" onclick={() => shiftDebugTimeOffset(15)}>+15m</button>
+								<button type="button" onclick={() => shiftDebugTimeOffset(60)}>+60m</button>
+								<button type="button" onclick={() => (debugTimeOffsetMinutes = 0)}>Ahora</button>
+							</div>
+						</div>
+					</section>
+				{/if}
+
+				<section class="current" aria-labelledby="current-heading">
+					<h2 id="current-heading" class="visually-hidden">Tiempo actual</h2>
+					<div class="current-main">
+						<span class="current-icon">{@render weatherIcon(activeWeatherCondition, showNightIcon)}</span>
+						<p class="big-temp">{formatTemp(report.current?.temperatureC)}</p>
 						<p class="summary">{report.current?.description ?? 'Sin descripci\u00f3n'}</p>
-						<p>Precipitaci&oacute;n: {formatPercent(activePrecipitationProbability)}</p>
-						<p>Intensidad precipitaci&oacute;n: {precipitationLevelLabel}</p>
-						<p>Humedad: {formatPercent(report.current?.humidityPercent)}</p>
-						<p>Viento: {formatWind(report.current?.windKmh)}</p>
 					</div>
+
+					<dl class="metrics">
+						<div class="metric">
+							<dt>{@render icon('droplet')} Precipitaci&oacute;n</dt>
+							<dd>
+								<span>{formatPercent(activePrecipitationProbability)}</span>
+								<span class="meter" aria-hidden="true">
+									<span style={`width:${activePrecipitationProbability}%`}></span>
+								</span>
+							</dd>
+						</div>
+						<div class="metric">
+							<dt>{@render icon('umbrella')} Intensidad</dt>
+							<dd><span>{capitalize(precipitationLevelLabel)}</span></dd>
+						</div>
+						<div class="metric">
+							<dt>{@render icon('humidity')} Humedad</dt>
+							<dd>
+								<span>{formatPercent(report.current?.humidityPercent)}</span>
+								{#if currentHumidity !== null}
+									<span class="meter meter-humidity" aria-hidden="true">
+										<span style={`width:${currentHumidity}%`}></span>
+									</span>
+								{/if}
+							</dd>
+						</div>
+						<div class="metric">
+							<dt>{@render icon('wind')} Viento</dt>
+							<dd><span>{formatWind(report.current?.windKmh)}</span></dd>
+						</div>
+					</dl>
 				</section>
 
 				{#if mode === 'all-info'}
-					<section class="panel">
-					<div class="panel-header">
-						<h2>Por horas</h2>
-						<div class="pager">
-							<button type="button" onclick={() => (hourlyPage = Math.max(0, hourlyPage - 1))}>
-								Anterior
-							</button>
-							<span>{hourlyChunks.length ? hourlyPage + 1 : 0}/{hourlyChunks.length}</span>
-							<button
-								type="button"
-								onclick={() => (hourlyPage = Math.min(hourlyChunks.length - 1, hourlyPage + 1))}
-							>
-								Siguiente
-							</button>
+					<section class="panel" aria-labelledby="hourly-heading">
+						<div class="panel-header">
+							<h2 id="hourly-heading">{@render icon('clock')} Por horas</h2>
+							{#if hourlyChunks.length > 1}
+								<div class="pager">
+									<button
+										type="button"
+										aria-label="Horas anteriores"
+										disabled={hourlyPage <= 0}
+										onclick={() => (hourlyPage = Math.max(0, hourlyPage - 1))}
+									>
+										{@render icon('chevron-left')}
+									</button>
+									<span aria-live="polite">
+										<span class="visually-hidden">Página </span>{hourlyPage + 1}<span aria-hidden="true">/</span><span class="visually-hidden"> de </span>{hourlyChunks.length}
+									</span>
+									<button
+										type="button"
+										aria-label="Horas siguientes"
+										disabled={hourlyPage >= hourlyChunks.length - 1}
+										onclick={() => (hourlyPage = Math.min(hourlyChunks.length - 1, hourlyPage + 1))}
+									>
+										{@render icon('chevron-right')}
+									</button>
+								</div>
+							{/if}
 						</div>
-					</div>
 
-					{#if visibleHourly.length > 0}
-						<div class="cards">
-							{#each visibleHourly as hour}
-								<article class="card">
-									<p class="time">{formatTime(hour.isoTime)}</p>
-									<p>{formatTemp(hour.temperatureC)}</p>
-									<p class="soft">{hour.description ?? 'Sin dato'}</p>
-									<p class="soft">{formatPercent(hour.precipitationProbabilityPercent)} lluvia</p>
-								</article>
-							{/each}
-						</div>
-					{:else}
-						<p class="empty">No hay datos horarios disponibles.</p>
-					{/if}
+						{#if visibleHourly.length > 0}
+							<ol class="cards">
+								{#each visibleHourly as hour}
+									<li class="card">
+										<p class="time">{formatTime(hour.isoTime)}</p>
+										<span class="card-icon">
+											{@render weatherIcon(normalizeWeatherCondition(hour.condition), false)}
+										</span>
+										<p class="card-temp">{formatTemp(hour.temperatureC)}</p>
+										<p class="soft">{hour.description ?? 'Sin dato'}</p>
+										<p class="rain">
+											{@render icon('droplet')}
+											{formatPercent(hour.precipitationProbabilityPercent)}
+											<span class="visually-hidden">de probabilidad de lluvia</span>
+										</p>
+									</li>
+								{/each}
+							</ol>
+						{:else}
+							<p class="empty">No hay datos horarios disponibles.</p>
+						{/if}
 					</section>
 
-					<section class="panel">
-					<div class="panel-header">
-						<h2>Pr&oacute;ximos d&iacute;as</h2>
-						<div class="pager">
-							<button type="button" onclick={() => (dailyPage = Math.max(0, dailyPage - 1))}>
-								Anterior
-							</button>
-							<span>{dailyChunks.length ? dailyPage + 1 : 0}/{dailyChunks.length}</span>
-							<button type="button" onclick={() => (dailyPage = Math.min(dailyChunks.length - 1, dailyPage + 1))}>
-								Siguiente
-							</button>
+					<section class="panel" aria-labelledby="daily-heading">
+						<div class="panel-header">
+							<h2 id="daily-heading">{@render icon('calendar')} Pr&oacute;ximos d&iacute;as</h2>
+							{#if dailyChunks.length > 1}
+								<div class="pager">
+									<button
+										type="button"
+										aria-label="Días anteriores"
+										disabled={dailyPage <= 0}
+										onclick={() => (dailyPage = Math.max(0, dailyPage - 1))}
+									>
+										{@render icon('chevron-left')}
+									</button>
+									<span aria-live="polite">
+										<span class="visually-hidden">Página </span>{dailyPage + 1}<span aria-hidden="true">/</span><span class="visually-hidden"> de </span>{dailyChunks.length}
+									</span>
+									<button
+										type="button"
+										aria-label="Días siguientes"
+										disabled={dailyPage >= dailyChunks.length - 1}
+										onclick={() => (dailyPage = Math.min(dailyChunks.length - 1, dailyPage + 1))}
+									>
+										{@render icon('chevron-right')}
+									</button>
+								</div>
+							{/if}
 						</div>
-					</div>
 
-					{#if visibleDaily.length > 0}
-						<div class="cards">
-							{#each visibleDaily as day}
-								<article class="card">
-									<p class="time">{formatDate(day.isoDate)}</p>
-									<p>{formatTemp(day.maxTemperatureC)} / {formatTemp(day.minTemperatureC)}</p>
-									<p class="soft">{day.description ?? 'Sin dato'}</p>
-									<p class="soft">{formatPercent(day.precipitationProbabilityPercent)} lluvia</p>
-								</article>
-							{/each}
-						</div>
-					{:else}
-						<p class="empty">No hay datos diarios disponibles.</p>
-					{/if}
+						{#if visibleDaily.length > 0}
+							<ol class="cards cards-daily">
+								{#each visibleDaily as day}
+									<li class="card">
+										<p class="time">{formatDate(day.isoDate)}</p>
+										<span class="card-icon">
+											{@render weatherIcon(normalizeWeatherCondition(day.condition), false)}
+										</span>
+										<p class="card-temp">
+											<span class="visually-hidden">Máxima </span>{formatTemp(day.maxTemperatureC)}
+											<span class="min"><span class="visually-hidden">, mínima </span>{formatTemp(day.minTemperatureC)}</span>
+										</p>
+										<p class="soft">{day.description ?? 'Sin dato'}</p>
+										<p class="rain">
+											{@render icon('droplet')}
+											{formatPercent(day.precipitationProbabilityPercent)}
+											<span class="visually-hidden">de probabilidad de lluvia</span>
+										</p>
+									</li>
+								{/each}
+							</ol>
+						{:else}
+							<p class="empty">No hay datos diarios disponibles.</p>
+						{/if}
 					</section>
 				{/if}
 
 				{#if mode === 'photo' && activeImage?.attributionText}
 					<p class="attribution">
-						Imagen: {activeImage.attributionText}
-						{#if activeImage.attributionUrl}
-							&middot;
-							<a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente</a>
-						{/if}
+						{@render icon('photo')}
+						<span>
+							Imagen: {activeImage.attributionText}
+							{#if activeImage.attributionUrl}
+								&middot;
+								<a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">
+									fuente<span class="visually-hidden"> (se abre en una pestaña nueva)</span>
+								</a>
+							{/if}
+						</span>
 					</p>
 				{/if}
 			</div>
 		</div>
 	{:else if status === 'ambiguous'}
-		<section class="state">
-			<h1>Hay varios municipios llamados {placeName}</h1>
-			<p>{payload.message}</p>
-			<div class="list">
-				{#each (payload.candidates ?? []) as candidate}
-					<button type="button" class="candidate" onclick={() => openCandidate(candidate)}>
-						{candidate.name}{candidate.province ? `, ${candidate.province}` : ''} ({candidate.code})
-					</button>
-				{/each}
-			</div>
-		</section>
+		<div class="state-wrap">
+			<section class="state" aria-labelledby="state-title">
+				<a class="back-link" href="/">{@render icon('arrow-left')} Volver al inicio</a>
+				<span class="state-icon">{@render icon('pin')}</span>
+				<h1 id="state-title">Hay varios municipios llamados {placeName}</h1>
+				{#if payload.message}
+					<p class="state-lead">{payload.message}</p>
+				{/if}
+				<ul class="list">
+					{#each (payload.candidates ?? []) as candidate}
+						<li>
+							<button type="button" class="candidate" onclick={() => openCandidate(candidate)}>
+								<span class="candidate-icon">{@render icon('pin')}</span>
+								<span class="candidate-text">
+									<strong>{candidate.name}</strong>
+									<span>{candidate.province ? candidate.province : 'Provincia desconocida'} · código {candidate.code}</span>
+								</span>
+								<span class="candidate-chevron">{@render icon('chevron-right')}</span>
+							</button>
+						</li>
+					{/each}
+				</ul>
+			</section>
+		</div>
 	{:else if status === 'not_found'}
-		<section class="state">
-			<h1>No encontramos el municipio {placeName}</h1>
-			<p>{payload.message}</p>
+		<div class="state-wrap">
+			<section class="state" aria-labelledby="state-title">
+				<a class="back-link" href="/">{@render icon('arrow-left')} Volver al inicio</a>
+				<span class="state-icon">{@render icon('search')}</span>
+				<h1 id="state-title">No encontramos el municipio {placeName}</h1>
+				{#if payload.message}
+					<p class="state-lead">{payload.message}</p>
+				{/if}
 
-			{#if (payload.suggestions ?? []).length > 0}
-				<h2>Sugerencias por nombre</h2>
-				<div class="list">
-					{#each payload.suggestions as suggestion}
-						<button type="button" class="candidate" onclick={() => openCandidate(suggestion)}>
-							{suggestion.name}{suggestion.province ? `, ${suggestion.province}` : ''} ({suggestion.code})
-						</button>
-					{/each}
-				</div>
-			{/if}
+				{#if (payload.suggestions ?? []).length > 0}
+					<h2>Sugerencias por nombre</h2>
+					<ul class="list">
+						{#each payload.suggestions as suggestion}
+							<li>
+								<button type="button" class="candidate" onclick={() => openCandidate(suggestion)}>
+									<span class="candidate-icon">{@render icon('pin')}</span>
+									<span class="candidate-text">
+										<strong>{suggestion.name}</strong>
+										<span>{suggestion.province ? suggestion.province : 'Provincia desconocida'} · código {suggestion.code}</span>
+									</span>
+									<span class="candidate-chevron">{@render icon('chevron-right')}</span>
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
 
-			{#if (payload.provinceSuggestions ?? []).length > 0}
-				<h2>Provincias relacionadas</h2>
-				<div class="province-list">
-					{#each payload.provinceSuggestions as provinceSuggestion}
-						<article class="province-card">
-							<p class="province-title">
-								{provinceSuggestion.province} &middot; {provinceSuggestion.totalMunicipalities} municipios
-							</p>
-							<div class="mini-list">
-								{#each provinceSuggestion.municipalities as municipalityItem}
-									<button
-										type="button"
-										class="mini-candidate"
-										onclick={() => openCandidate(municipalityItem)}
-									>
-										{municipalityItem.name}
-									</button>
-								{/each}
-							</div>
-						</article>
-					{/each}
-				</div>
-			{/if}
+				{#if (payload.provinceSuggestions ?? []).length > 0}
+					<h2>Provincias relacionadas</h2>
+					<div class="province-list">
+						{#each payload.provinceSuggestions as provinceSuggestion}
+							<article class="province-card">
+								<h3 class="province-title">
+									{provinceSuggestion.province}
+									<span>{provinceSuggestion.totalMunicipalities} municipios</span>
+								</h3>
+								<ul class="mini-list">
+									{#each provinceSuggestion.municipalities as municipalityItem}
+										<li>
+											<button
+												type="button"
+												class="mini-candidate"
+												onclick={() => openCandidate(municipalityItem)}
+											>
+												{municipalityItem.name}
+											</button>
+										</li>
+									{/each}
+								</ul>
+							</article>
+						{/each}
+					</div>
+				{/if}
 
-			<h2>Listar municipios por provincia</h2>
-			<form class="province-form" onsubmit={searchProvince}>
-				<input bind:value={selectedProvince} placeholder="Asturias" />
-				<button type="submit" disabled={loadingProvinceMunicipalities}>
-					{loadingProvinceMunicipalities ? 'Cargando...' : 'Listar'}
-				</button>
-			</form>
+				<h2>Listar municipios por provincia</h2>
+				<form class="province-form" onsubmit={searchProvince}>
+					<label for="province-search" class="visually-hidden">Provincia</label>
+					<div class="control">
+						<span class="control-icon">{@render icon('search')}</span>
+						<input
+							id="province-search"
+							bind:value={selectedProvince}
+							placeholder="Asturias"
+							autocomplete="off"
+							autocapitalize="words"
+						/>
+					</div>
+					<button
+						type="submit"
+						class="btn-primary"
+						disabled={loadingProvinceMunicipalities}
+						aria-busy={loadingProvinceMunicipalities}
+					>
+						{#if loadingProvinceMunicipalities}
+							<span class="spinner" aria-hidden="true"></span>
+							Cargando…
+						{:else}
+							{@render icon('list')}
+							Listar
+						{/if}
+					</button>
+				</form>
 
-			{#if provinceMunicipalityError}
-				<p class="error">{provinceMunicipalityError}</p>
-			{/if}
+				{#if provinceMunicipalityError}
+					<p class="error" role="alert">{@render icon('alert')} {provinceMunicipalityError}</p>
+				{/if}
 
-			{#if provinceMunicipalities.length > 0}
-				<div class="list">
-					{#each provinceMunicipalities as municipalityItem}
-						<button
-							type="button"
-							class="candidate"
-							onclick={() => openCandidate(municipalityItem)}
-						>
-							{municipalityItem.name} ({municipalityItem.code})
-						</button>
-					{/each}
-				</div>
-			{/if}
-		</section>
+				<p class="visually-hidden" aria-live="polite">
+					{provinceMunicipalities.length > 0 ? `${provinceMunicipalities.length} municipios encontrados` : ''}
+				</p>
+
+				{#if provinceMunicipalities.length > 0}
+					<ul class="list list-compact">
+						{#each provinceMunicipalities as municipalityItem}
+							<li>
+								<button
+									type="button"
+									class="candidate"
+									onclick={() => openCandidate(municipalityItem)}
+								>
+									<span class="candidate-text">
+										<strong>{municipalityItem.name}</strong>
+										<span>código {municipalityItem.code}</span>
+									</span>
+									<span class="candidate-chevron">{@render icon('chevron-right')}</span>
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</section>
+		</div>
 	{:else}
-		<section class="state">
-			<h1>Tiempo en {placeName}</h1>
-			<p>{payload.message ?? 'No se pudo obtener la informaci\u00f3n meteorol\u00f3gica.'}</p>
-		</section>
+		<div class="state-wrap">
+			<section class="state state-error" aria-labelledby="state-title">
+				<span class="state-icon">{@render icon('alert')}</span>
+				<h1 id="state-title">Tiempo en {placeName}</h1>
+				<p class="state-lead" role="alert">
+					{payload.message ?? 'No se pudo obtener la informaci\u00f3n meteorol\u00f3gica.'}
+				</p>
+				<div class="state-actions">
+					<button
+						type="button"
+						class="btn-primary"
+						onclick={() => void retryLoad()}
+						disabled={retrying}
+						aria-busy={retrying}
+					>
+						{#if retrying}
+							<span class="spinner" aria-hidden="true"></span>
+							Reintentando…
+						{:else}
+							{@render icon('refresh')}
+							Reintentar
+						{/if}
+					</button>
+					<a class="btn-secondary" href="/">{@render icon('home')} Volver al inicio</a>
+				</div>
+			</section>
+		</div>
 	{/if}
 </main>
 
 <style>
 	.page {
+		min-height: 100vh;
 		min-height: 100svh;
 		padding: 0;
 	}
 
+	.page:focus {
+		outline: none;
+	}
+
+	.ico {
+		width: 1.1em;
+		height: 1.1em;
+		flex: none;
+	}
+
+	.wi {
+		display: block;
+		width: 100%;
+		height: 100%;
+		overflow: visible;
+	}
+
+	.wi-sun {
+		stroke: #ffc44d;
+	}
+
+	.wi-sun-core {
+		stroke: #ffc44d;
+		fill: rgba(255, 196, 77, 0.28);
+	}
+
+	.wi-moon {
+		stroke: #e6eef7;
+		fill: rgba(230, 238, 247, 0.18);
+	}
+
+	.wi-star {
+		stroke: #ffe3a1;
+		stroke-width: 1.8;
+	}
+
+	.wi-cloud {
+		fill: rgba(232, 244, 248, 0.16);
+	}
+
+	.wi-rain {
+		stroke: #7fd8ec;
+	}
+
+	.wi-snow {
+		fill: #e8f4f8;
+		stroke: none;
+	}
+
+	.wi-bolt {
+		stroke: #ffc44d;
+		fill: rgba(255, 196, 77, 0.3);
+	}
+
+	.wi-fog {
+		stroke: #b8d4dd;
+	}
+
+	/* ---------- Escena ---------- */
+
 	.scene {
 		position: relative;
 		width: 100%;
+		min-height: 100vh;
 		min-height: 100svh;
 		margin: 0;
-		border-radius: 0;
 		overflow: hidden;
+		color-scheme: dark;
+		--focus: #ffd36b;
 		--daylight: 0;
 		--night: 1;
 		--scene-bg-top: #10384a;
@@ -1232,7 +1695,6 @@
 		--city-road: rgba(4, 19, 29, 0.74);
 		--city-window: rgba(255, 226, 154, 0.84);
 		background: linear-gradient(180deg, var(--scene-bg-top), var(--scene-bg-bottom));
-		box-shadow: none;
 		transition: background 900ms linear;
 	}
 
@@ -1272,7 +1734,21 @@
 				var(--overlay-mid) 56%,
 				var(--overlay-bottom) 100%
 			);
-		transition: background 900ms linear, opacity 900ms linear;
+		transition:
+			background 900ms linear,
+			opacity 900ms linear;
+	}
+
+	.mode-photo .gradient {
+		background:
+			linear-gradient(180deg, rgba(4, 16, 24, 0.55) 0%, rgba(4, 16, 24, 0) 28%),
+			radial-gradient(circle at 20% 0%, var(--sky-sun-glow), transparent 42%),
+			linear-gradient(
+				180deg,
+				var(--overlay-top) 0%,
+				var(--overlay-mid) 56%,
+				var(--overlay-bottom) 100%
+			);
 	}
 
 	.minimal-city-layer {
@@ -1426,6 +1902,45 @@
 		visibility: hidden;
 	}
 
+	/* ---------- Utilidades ---------- */
+
+	.visually-hidden {
+		position: absolute !important;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	.spinner {
+		display: inline-block;
+		width: 1em;
+		height: 1em;
+		flex: none;
+		border-radius: 999px;
+		border: 2px solid currentColor;
+		border-right-color: transparent;
+		animation: spin 0.8s linear infinite;
+	}
+
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	.scene :focus-visible,
+	.state-wrap :focus-visible {
+		outline: 2px solid var(--focus, #ffd36b);
+		outline-offset: 2px;
+	}
+
+	/* ---------- Contenido ---------- */
+
 	.content {
 		position: relative;
 		z-index: 4;
@@ -1434,45 +1949,209 @@
 		display: grid;
 		gap: 1rem;
 		width: min(1220px, 100%);
+		margin: 0 auto;
 	}
 
 	.scene.compact {
+		min-height: 100vh;
 		min-height: 100svh;
 	}
 
 	.content-compact {
 		max-width: 760px;
+		margin: 0;
 	}
 
-	.content-compact .current {
-		background: var(--surface);
-		padding: 1.15rem;
-	}
-
-	.content-compact .big-temp {
-		font-size: clamp(2.8rem, 8vw, 4.8rem);
-	}
-
-	.content-compact .meta {
-		gap: 0.28rem;
-	}
-
-	.hero {
+	.topbar {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.9rem;
+		gap: 0.75rem;
 		justify-content: space-between;
-		align-items: flex-start;
+		align-items: center;
+	}
+
+	.home-link {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.45rem;
+		min-height: 2.5rem;
+		padding: 0.35rem 0.8rem 0.35rem 0.6rem;
+		border-radius: 999px;
+		border: 1px solid var(--control-border);
+		background: var(--control-bg);
+		color: var(--control-text);
+		text-decoration: none;
+		font-weight: 600;
+		font-size: 0.9rem;
+		backdrop-filter: blur(6px);
+		transition: background 160ms ease, border-color 160ms ease;
+	}
+
+	.home-link:hover {
+		background: var(--control-bg-strong);
+		border-color: rgba(255, 255, 255, 0.5);
 	}
 
 	.hero-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		align-items: center;
+		justify-content: flex-end;
+	}
+
+	.mode-switch {
+		display: flex;
+		gap: 0.25rem;
+		padding: 0.25rem;
+		border-radius: 999px;
+		background: var(--control-bg);
+		border: 1px solid var(--control-border);
+		backdrop-filter: blur(6px);
+	}
+
+	.mode-switch button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-height: 2.25rem;
+		border: 0;
+		background: transparent;
+		color: var(--text-soft);
+		padding: 0.4rem 0.8rem;
+		border-radius: 999px;
+		font: inherit;
+		font-size: 0.86rem;
+		cursor: pointer;
+		transition: background 160ms ease, color 160ms ease;
+	}
+
+	.mode-switch button:hover {
+		color: var(--text-strong);
+		background: rgba(255, 255, 255, 0.08);
+	}
+
+	.mode-switch button[aria-pressed='true'] {
+		background: linear-gradient(110deg, var(--accent, #ffc44d), #ffe099);
+		color: #2f2810;
+		font-weight: 700;
+	}
+
+	.image-menu-wrap {
+		position: relative;
+	}
+
+	.image-menu-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		min-height: 2.5rem;
+		border: 1px solid var(--control-border);
+		background: var(--control-bg-strong);
+		color: var(--control-text);
+		border-radius: 999px;
+		padding: 0.35rem 0.85rem;
+		font: inherit;
+		font-size: 0.86rem;
+		cursor: pointer;
+		backdrop-filter: blur(6px);
+		transition: background 160ms ease, border-color 160ms ease;
+	}
+
+	.image-menu-toggle:hover,
+	.image-menu-toggle[aria-expanded='true'] {
+		border-color: rgba(255, 255, 255, 0.55);
+		background: var(--control-bg);
+	}
+
+	.image-menu {
+		position: absolute;
+		top: calc(100% + 0.4rem);
+		right: 0;
+		width: min(300px, 90vw);
+		background: var(--surface-strong, rgba(6, 26, 34, 0.9));
+		border: 1px solid var(--control-border);
+		border-radius: 14px;
+		padding: 0.4rem;
 		display: grid;
+		gap: 0.25rem;
+		z-index: 10;
+		backdrop-filter: blur(14px);
+		box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+	}
+
+	.menu-item {
+		display: flex;
+		align-items: center;
 		gap: 0.6rem;
-		justify-items: end;
+		width: 100%;
+		min-height: 2.6rem;
+		border: 0;
+		background: transparent;
+		color: var(--control-text);
+		border-radius: 10px;
+		padding: 0.5rem 0.65rem;
+		font: inherit;
+		font-size: 0.86rem;
+		text-align: left;
+		cursor: pointer;
+		transition: background 140ms ease;
+	}
+
+	.menu-item:hover:not(:disabled) {
+		background: rgba(255, 255, 255, 0.08);
+	}
+
+	.menu-item:disabled {
+		opacity: 0.55;
+		cursor: not-allowed;
+	}
+
+	.menu-item[aria-busy='true'] {
+		cursor: progress;
+	}
+
+	.menu-file:focus-within {
+		outline: 2px solid var(--focus);
+		outline-offset: 2px;
+	}
+
+	.menu-text {
+		display: grid;
+		gap: 0.1rem;
+	}
+
+	.menu-title {
+		font-weight: 600;
+	}
+
+	.menu-note {
+		font-size: 0.74rem;
+		color: var(--text-soft);
+	}
+
+	.menu-spinner {
+		width: 1.1em;
+		height: 1.1em;
+	}
+
+	.image-menu-error {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin: 0.2rem 0.4rem 0.3rem;
+		color: #ffd4c7;
+		font-size: 0.8rem;
+	}
+
+	.title-block {
+		display: grid;
+		gap: 0.3rem;
+		padding-top: clamp(0.5rem, 3vh, 2rem);
 	}
 
 	.chip {
-		margin: 0 0 0.35rem;
+		margin: 0;
 		display: inline-block;
 		font-size: 0.74rem;
 		font-weight: 700;
@@ -1483,116 +2162,30 @@
 
 	h1 {
 		margin: 0;
-		font-size: clamp(1.6rem, 4vw, 2.5rem);
+		font-size: clamp(1.8rem, 5vw, 3rem);
 		line-height: 1.05;
+		text-wrap: balance;
+		text-shadow: 0 2px 18px rgba(0, 0, 0, 0.35);
 	}
 
 	.subtitle {
-		margin: 0.25rem 0 0;
-		color: var(--text-soft);
-	}
-
-	.mode-switch {
 		display: flex;
-		gap: 0.45rem;
-		padding: 0.28rem;
-		border-radius: 999px;
-		background: var(--control-bg);
-		border: 1px solid var(--control-border);
-	}
-
-	.mode-switch button {
-		border: 0;
-		background: transparent;
-		color: var(--text-soft);
-		padding: 0.42rem 0.75rem;
-		border-radius: 999px;
-		cursor: pointer;
-	}
-
-	.mode-switch button.active {
-		background: linear-gradient(110deg, var(--accent), #ffe099);
-		color: #2f2810;
-		font-weight: 700;
-	}
-
-	.image-menu-wrap {
-		position: relative;
-	}
-
-	.image-menu-toggle {
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 999px;
-		padding: 0.28rem 0.62rem;
-		font-size: 0.76rem;
-		cursor: pointer;
-	}
-
-	.image-menu {
-		position: absolute;
-		top: calc(100% + 0.35rem);
-		right: 0;
-		width: min(300px, 90vw);
-		background: var(--surface-strong);
-		border: 1px solid var(--control-border);
-		border-radius: 12px;
-		padding: 0.5rem;
-		display: grid;
-		gap: 0.45rem;
-		z-index: 3;
-	}
-
-	.image-menu-action,
-	.image-menu-reset {
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 9px;
-		padding: 0.42rem 0.56rem;
-		font-size: 0.78rem;
-		cursor: pointer;
-		text-align: left;
-	}
-
-	.image-menu-action:disabled {
-		opacity: 0.68;
-		cursor: progress;
-	}
-
-	.image-menu-file {
-		display: grid;
-		gap: 0.4rem;
-	}
-
-	.image-menu-file label {
-		font-size: 0.74rem;
-		color: var(--text-soft);
-	}
-
-	.image-menu-file input {
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 8px;
-		padding: 0.3rem 0.42rem;
-		font-size: 0.75rem;
-		min-width: 0;
-	}
-
-	.image-menu-error {
+		align-items: center;
+		gap: 0.35rem;
 		margin: 0;
-		color: #ffd4c7;
-		font-size: 0.75rem;
+		color: var(--text-soft);
 	}
+
+	/* ---------- Debug ---------- */
 
 	.debug-panel {
 		background: var(--surface-strong);
-		border: 1px solid var(--control-border);
+		border: 1px dashed var(--control-border);
 		border-radius: 14px;
-		padding: 0.5rem;
-		min-width: 260px;
+		padding: 0.75rem;
+		display: grid;
+		gap: 0.2rem;
+		max-width: 520px;
 	}
 
 	.debug-title {
@@ -1613,7 +2206,7 @@
 	}
 
 	.debug-info {
-		margin: 0 0 0.5rem;
+		margin: 0 0 0.4rem;
 		font-size: 0.76rem;
 		color: var(--text-soft);
 	}
@@ -1638,79 +2231,47 @@
 		gap: 0.35rem;
 	}
 
-	.debug-precipitation {
-		margin-top: 0.55rem;
-		display: grid;
-		gap: 0.35rem;
-	}
-
-	.debug-precipitation-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-	}
-
-	.debug-precipitation-head .debug-label {
-		margin: 0;
-	}
-
-	.debug-precipitation-head strong {
-		color: var(--text-strong);
-		font-size: 0.82rem;
-	}
-
-	.debug-precipitation-range {
-		width: 100%;
-		accent-color: var(--accent-2);
-	}
-
-	.debug-precipitation-number {
-		width: 84px;
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 8px;
-		padding: 0.28rem 0.45rem;
-		font-size: 0.8rem;
-	}
-
+	.debug-precipitation,
 	.debug-time {
 		margin-top: 0.55rem;
 		display: grid;
 		gap: 0.35rem;
 	}
 
-	.debug-time-head {
+	.debug-head {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: 0.5rem;
 	}
 
-	.debug-time-head .debug-label {
+	.debug-head .debug-label {
 		margin: 0;
 	}
 
-	.debug-time-head strong {
+	.debug-head strong {
 		color: var(--text-strong);
 		font-size: 0.82rem;
 	}
 
-	.debug-time-info {
-		margin: 0;
-		font-size: 0.74rem;
-		color: var(--text-soft);
+	.debug-range {
+		width: 100%;
+		accent-color: var(--accent-2, #7de6ef);
 	}
 
-	.debug-time-number {
+	.debug-number {
 		width: 100%;
 		border: 1px solid var(--control-border);
 		background: var(--control-bg-strong);
 		color: var(--control-text);
 		border-radius: 8px;
-		padding: 0.28rem 0.45rem;
+		padding: 0.3rem 0.45rem;
+		font: inherit;
 		font-size: 0.8rem;
+	}
+
+	.debug-number-short {
+		width: 84px;
 	}
 
 	.debug-time-buttons {
@@ -1727,6 +2288,7 @@
 		color: var(--control-text);
 		padding: 0.28rem 0.6rem;
 		border-radius: 999px;
+		font: inherit;
 		font-size: 0.78rem;
 		text-transform: capitalize;
 		cursor: pointer;
@@ -1740,43 +2302,124 @@
 		font-weight: 700;
 	}
 
+	/* ---------- Tiempo actual ---------- */
+
 	.current {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 1rem;
-		padding: 1rem;
-		border-radius: 16px;
+		display: grid;
+		grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+		gap: 1.25rem;
+		align-items: center;
+		padding: clamp(1rem, 2.5vw, 1.4rem);
+		border-radius: 20px;
 		background: var(--surface);
-		backdrop-filter: blur(3px);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		backdrop-filter: blur(8px);
+	}
+
+	.current-main {
+		display: grid;
+		grid-template-columns: auto auto;
+		grid-template-areas:
+			'icon temp'
+			'summary summary';
+		align-items: center;
+		column-gap: 0.75rem;
+		row-gap: 0.35rem;
+	}
+
+	.current-icon {
+		grid-area: icon;
+		display: block;
+		width: clamp(3.2rem, 9vw, 4.6rem);
+		height: clamp(3.2rem, 9vw, 4.6rem);
+		color: var(--text-strong);
 	}
 
 	.big-temp {
-		font-size: clamp(2.2rem, 6vw, 4rem);
+		grid-area: temp;
+		margin: 0;
+		font-size: clamp(3rem, 9vw, 5rem);
 		font-weight: 700;
 		line-height: 1;
-	}
-
-	.meta {
-		display: grid;
-		gap: 0.2rem;
-		align-content: center;
-	}
-
-	.meta p {
-		margin: 0;
-		color: var(--text-soft);
+		letter-spacing: -0.02em;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.summary {
+		grid-area: summary;
+		margin: 0;
 		color: var(--text-strong);
-		font-size: 1rem;
+		font-size: 1.05rem;
 		font-weight: 600;
 	}
 
+	.metrics {
+		margin: 0;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.6rem;
+	}
+
+	.metric {
+		display: grid;
+		gap: 0.3rem;
+		padding: 0.6rem 0.75rem;
+		border-radius: 12px;
+		background: rgba(255, 255, 255, 0.05);
+		border: 1px solid rgba(255, 255, 255, 0.06);
+	}
+
+	.metric dt {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.74rem;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-soft);
+	}
+
+	.metric dd {
+		margin: 0;
+		display: grid;
+		gap: 0.35rem;
+		font-size: 1.05rem;
+		font-weight: 600;
+		color: var(--text-strong);
+		font-variant-numeric: tabular-nums;
+	}
+
+	.meter {
+		display: block;
+		height: 4px;
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.14);
+		overflow: hidden;
+	}
+
+	.meter > span {
+		display: block;
+		height: 100%;
+		border-radius: inherit;
+		background: linear-gradient(90deg, #7fd8ec, #4fb6e0);
+		transition: width 400ms ease;
+	}
+
+	.meter-humidity > span {
+		background: linear-gradient(90deg, #a6e3cf, #64c7b0);
+	}
+
+	.content-compact .current {
+		background: var(--surface);
+	}
+
+	/* ---------- Paneles ---------- */
+
 	.panel {
 		background: var(--surface-strong);
-		border-radius: 16px;
-		padding: 0.95rem;
+		border-radius: 20px;
+		padding: clamp(0.9rem, 2vw, 1.2rem);
+		border: 1px solid rgba(255, 255, 255, 0.06);
 	}
 
 	.panel-header {
@@ -1784,41 +2427,69 @@
 		justify-content: space-between;
 		align-items: center;
 		gap: 0.8rem;
-		margin-bottom: 0.7rem;
+		margin-bottom: 0.8rem;
 	}
 
 	h2 {
+		display: flex;
+		align-items: center;
+		gap: 0.45rem;
 		margin: 0;
-		font-size: 1.02rem;
+		font-size: 1.05rem;
 	}
 
 	.pager {
 		display: flex;
 		align-items: center;
 		gap: 0.45rem;
-		font-size: 0.9rem;
+		font-size: 0.88rem;
 		color: var(--text-soft);
+		font-variant-numeric: tabular-nums;
 	}
 
 	.pager button {
+		display: inline-grid;
+		place-items: center;
+		width: 2.25rem;
+		height: 2.25rem;
 		border: 1px solid var(--control-border);
-		border-radius: 10px;
+		border-radius: 999px;
 		background: var(--control-bg-strong);
 		color: var(--text-strong);
-		padding: 0.3rem 0.55rem;
 		cursor: pointer;
+		transition: background 140ms ease, opacity 140ms ease;
+	}
+
+	.pager button:hover:not(:disabled) {
+		background: var(--control-bg);
+	}
+
+	.pager button:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
 	}
 
 	.cards {
+		list-style: none;
+		margin: 0;
+		padding: 0;
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-		gap: 0.65rem;
+		grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+		gap: 0.6rem;
+	}
+
+	.cards-daily {
+		grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
 	}
 
 	.card {
+		display: grid;
+		justify-items: center;
+		text-align: center;
+		gap: 0.25rem;
 		background: var(--surface);
-		border-radius: 12px;
-		padding: 0.65rem;
+		border-radius: 14px;
+		padding: 0.75rem 0.6rem;
 		border: 1px solid var(--control-border);
 	}
 
@@ -1827,14 +2498,44 @@
 	}
 
 	.time {
-		font-size: 0.82rem;
+		font-size: 0.8rem;
+		font-weight: 600;
 		color: var(--panel-heading);
-		margin-bottom: 0.2rem;
+		text-transform: capitalize;
+	}
+
+	.card-icon {
+		display: block;
+		width: 2.2rem;
+		height: 2.2rem;
+		color: var(--text-strong);
+	}
+
+	.card-temp {
+		font-size: 1.15rem;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.card-temp .min {
+		margin-left: 0.3rem;
+		font-weight: 500;
+		color: var(--text-soft);
 	}
 
 	.soft {
-		font-size: 0.83rem;
+		font-size: 0.8rem;
 		color: var(--text-soft);
+		line-height: 1.3;
+	}
+
+	.rain {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		font-size: 0.8rem;
+		color: #9fe2f2;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.empty {
@@ -1843,42 +2544,213 @@
 	}
 
 	.attribution {
+		display: flex;
+		align-items: flex-start;
+		gap: 0.4rem;
 		margin: 0;
 		color: var(--text-soft);
-		font-size: 0.8rem;
+		font-size: 0.78rem;
+	}
+
+	.attribution .ico {
+		margin-top: 0.1em;
 	}
 
 	.attribution a {
 		color: var(--chip-color);
 	}
 
+	/* ---------- Estados ---------- */
+
+	.state-wrap {
+		--text-strong: #eef8fc;
+		--text-soft: #bcd8e3;
+		--focus: #ffd36b;
+		color-scheme: dark;
+		min-height: 100vh;
+		min-height: 100svh;
+		display: grid;
+		place-items: start center;
+		padding: clamp(1rem, 4vw, 3rem) clamp(0.75rem, 3vw, 1.5rem);
+		background:
+			radial-gradient(circle at 15% 0%, rgba(255, 196, 110, 0.14), transparent 45%),
+			linear-gradient(180deg, #10384a, #071a25);
+	}
+
 	.state {
-		max-width: 980px;
-		margin: 0 auto;
-		background: linear-gradient(160deg, rgba(9, 35, 48, 0.9), rgba(7, 27, 39, 0.94));
+		width: min(760px, 100%);
+		display: grid;
+		gap: 0.75rem;
+		background: linear-gradient(160deg, rgba(9, 35, 48, 0.92), rgba(7, 27, 39, 0.96));
 		color: var(--text-strong);
-		border-radius: 22px;
-		padding: 1.2rem;
+		border: 1px solid rgba(188, 224, 232, 0.14);
+		border-radius: 24px;
+		padding: clamp(1.1rem, 3vw, 1.8rem);
+		box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
+	}
+
+	.state h1 {
+		font-size: clamp(1.5rem, 4vw, 2.2rem);
+		text-shadow: none;
+	}
+
+	.state h2 {
+		margin-top: 0.75rem;
+		font-size: 1rem;
+		color: #9cd7e4;
 	}
 
 	.state p {
 		color: var(--text-soft);
 	}
 
+	.back-link {
+		justify-self: start;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		color: var(--text-soft);
+		text-decoration: none;
+		font-size: 0.88rem;
+		padding: 0.25rem 0;
+	}
+
+	.back-link:hover {
+		color: var(--text-strong);
+	}
+
+	.state-icon {
+		display: inline-grid;
+		place-items: center;
+		width: 3rem;
+		height: 3rem;
+		border-radius: 999px;
+		background: rgba(125, 216, 236, 0.12);
+		color: #9fe2f2;
+		font-size: 1.4rem;
+	}
+
+	.state-error .state-icon {
+		background: rgba(255, 180, 150, 0.12);
+		color: #ffc2ad;
+	}
+
+	.state-lead {
+		margin: 0;
+		font-size: 1rem;
+		line-height: 1.5;
+	}
+
+	.state-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.6rem;
+		margin-top: 0.5rem;
+	}
+
+	.btn-primary,
+	.btn-secondary {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.45rem;
+		min-height: 2.75rem;
+		padding: 0.6rem 1rem;
+		border-radius: 12px;
+		font: inherit;
+		font-weight: 700;
+		text-decoration: none;
+		cursor: pointer;
+		transition: filter 140ms ease, background 140ms ease, opacity 140ms ease;
+	}
+
+	.btn-primary {
+		border: 0;
+		background: linear-gradient(120deg, #44d5da, #86f4f4);
+		color: #083538;
+	}
+
+	.btn-primary:hover:not(:disabled) {
+		filter: brightness(1.06);
+	}
+
+	.btn-primary:disabled {
+		opacity: 0.7;
+		cursor: progress;
+	}
+
+	.btn-secondary {
+		border: 1px solid rgba(188, 224, 232, 0.3);
+		background: rgba(10, 39, 50, 0.5);
+		color: var(--text-strong);
+	}
+
+	.btn-secondary:hover {
+		background: rgba(14, 52, 66, 0.7);
+	}
+
 	.list {
+		list-style: none;
+		margin: 0.25rem 0 0;
+		padding: 0;
 		display: grid;
 		gap: 0.5rem;
-		margin-top: 0.65rem;
+	}
+
+	.list-compact {
+		grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+		gap: 0.4rem;
 	}
 
 	.candidate {
+		display: flex;
+		align-items: center;
+		gap: 0.7rem;
+		width: 100%;
+		min-height: 3rem;
 		text-align: left;
-		border: 1px solid rgba(188, 224, 232, 0.25);
+		border: 1px solid rgba(188, 224, 232, 0.2);
 		background: rgba(10, 39, 50, 0.5);
 		color: var(--text-strong);
-		padding: 0.7rem;
-		border-radius: 12px;
+		padding: 0.65rem 0.8rem;
+		border-radius: 14px;
+		font: inherit;
 		cursor: pointer;
+		transition: background 140ms ease, border-color 140ms ease;
+	}
+
+	.candidate:hover {
+		background: rgba(16, 56, 72, 0.7);
+		border-color: rgba(188, 224, 232, 0.4);
+	}
+
+	.candidate-icon {
+		display: inline-grid;
+		place-items: center;
+		color: #9fe2f2;
+	}
+
+	.candidate-text {
+		flex: 1;
+		min-width: 0;
+		display: grid;
+		gap: 0.1rem;
+	}
+
+	.candidate-text span {
+		font-size: 0.82rem;
+		color: var(--text-soft);
+	}
+
+	.candidate-chevron {
+		display: inline-grid;
+		place-items: center;
+		color: var(--text-soft);
+		transition: transform 140ms ease;
+	}
+
+	.candidate:hover .candidate-chevron {
+		transform: translateX(2px);
 	}
 
 	.province-list {
@@ -1888,60 +2760,103 @@
 
 	.province-card {
 		background: rgba(9, 38, 50, 0.45);
-		border: 1px solid rgba(186, 225, 234, 0.2);
-		border-radius: 12px;
-		padding: 0.8rem;
+		border: 1px solid rgba(186, 225, 234, 0.16);
+		border-radius: 14px;
+		padding: 0.85rem;
 	}
 
 	.province-title {
-		margin: 0 0 0.55rem;
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 0.5rem;
+		margin: 0 0 0.6rem;
+		font-size: 0.98rem;
 		font-weight: 600;
 	}
 
+	.province-title span {
+		font-size: 0.8rem;
+		font-weight: 400;
+		color: var(--text-soft);
+	}
+
 	.mini-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.42rem;
 	}
 
 	.mini-candidate {
+		min-height: 2.25rem;
 		border: 1px solid rgba(183, 225, 235, 0.22);
 		background: rgba(7, 31, 43, 0.65);
 		color: #e5f5fb;
 		border-radius: 999px;
-		padding: 0.38rem 0.7rem;
+		padding: 0.38rem 0.8rem;
+		font: inherit;
+		font-size: 0.86rem;
 		cursor: pointer;
+		transition: background 140ms ease;
+	}
+
+	.mini-candidate:hover {
+		background: rgba(16, 56, 72, 0.8);
 	}
 
 	.province-form {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
-		margin-top: 0.35rem;
 	}
 
-	.province-form input {
-		padding: 0.65rem 0.8rem;
-		border-radius: 10px;
+	.control {
+		position: relative;
+		flex: 1 1 220px;
+		display: flex;
+		align-items: center;
+	}
+
+	.control-icon {
+		position: absolute;
+		left: 0.75rem;
+		display: inline-grid;
+		place-items: center;
+		color: var(--text-soft);
+		pointer-events: none;
+	}
+
+	.control input {
+		width: 100%;
+		min-height: 2.75rem;
+		padding: 0.6rem 0.8rem 0.6rem 2.3rem;
+		border-radius: 12px;
 		border: 1px solid rgba(185, 222, 232, 0.35);
 		background: rgba(8, 34, 46, 0.6);
 		color: #f1fbff;
-		min-width: 180px;
+		font: inherit;
 	}
 
-	.province-form button {
-		border: 0;
-		border-radius: 10px;
-		padding: 0.66rem 0.9rem;
-		background: linear-gradient(120deg, #44d5da, #86f4f4);
-		color: #083538;
-		font-weight: 700;
-		cursor: pointer;
+	.control input::placeholder {
+		color: rgba(188, 216, 227, 0.6);
+	}
+
+	.control input:focus-visible {
+		border-color: var(--focus);
 	}
 
 	.error {
-		color: #ffd2c7;
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		margin: 0;
+		color: #ffd2c7 !important;
 	}
+
+	/* ---------- Responsive ---------- */
 
 	@media (max-width: 800px) {
 		.scene,
@@ -1951,7 +2866,10 @@
 			transition: none;
 		}
 
-		.current {
+		.current,
+		.home-link,
+		.mode-switch,
+		.image-menu-toggle {
 			backdrop-filter: none;
 		}
 
@@ -1974,15 +2892,74 @@
 
 		.hero-controls {
 			width: 100%;
-			justify-items: start;
+			justify-content: space-between;
 		}
 
-		.debug-panel {
-			min-width: 0;
+		.current {
+			grid-template-columns: 1fr;
+		}
+
+		.image-menu {
+			right: auto;
+			left: 0;
+		}
+	}
+
+	@media (max-width: 520px) {
+		.mode-switch {
+			flex: 1 1 100%;
+		}
+
+		.mode-switch button {
+			flex: 1;
+			justify-content: center;
+			padding: 0.4rem 0.5rem;
+		}
+
+		.image-menu-wrap {
+			flex: 1 1 100%;
+		}
+
+		.image-menu-toggle {
 			width: 100%;
+			justify-content: center;
+		}
+
+		.image-menu {
+			width: 100%;
+		}
+
+		.metrics {
+			grid-template-columns: 1fr 1fr;
+			gap: 0.45rem;
+		}
+
+		.cards {
+			grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+		}
+
+		.panel-header {
+			flex-wrap: wrap;
+		}
+
+		.btn-primary,
+		.btn-secondary {
+			flex: 1 1 auto;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.scene,
+		.photo,
+		.gradient,
+		.minimal-city-layer,
+		.meter > span,
+		.candidate-chevron {
+			transition: none;
+		}
+
+		.spinner {
+			animation-duration: 2.4s;
 		}
 	}
 </style>
-
-
-
