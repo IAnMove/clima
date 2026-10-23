@@ -4,7 +4,7 @@ App de clima por ciudad con ruta dinámica (`/:city`), modo visual híbrido (fot
 
 ## Stack
 
-- SvelteKit (UI en CSR con `ssr=false`)
+- SvelteKit con SSR (la portada se prerenderiza; cada municipio se pinta en el HTML inicial)
 - API interna en SvelteKit (oculta la API key de AEMET)
 - Clean Architecture (domain/application/infrastructure)
 - Adapter: `@sveltejs/adapter-node`

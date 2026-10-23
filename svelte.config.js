@@ -5,7 +5,12 @@ const config = {
 	kit: {
 		adapter: adapter({
 			precompress: true
-		})
+		}),
+		prerender: {
+			origin: 'https://clima.iaen.es',
+			crawl: false,
+			entries: ['/']
+		}
 	}
 };
 

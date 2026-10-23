@@ -1,19 +1,40 @@
 <script lang="ts">
+	import { page } from '$app/state';
+	import { fallbackSeo, isPageSeo, jsonLdScript, type PageSeo } from '$lib/seo';
 	import favicon from '../../assets/clima.ico';
 
 	let { children } = $props();
 	const buildCommit = __BUILD_COMMIT__;
-	import { page } from '$app/state';
-	const canonical = $derived(`https://clima.iaen.es${page.url.pathname}`);
+	const seo = $derived<PageSeo>(
+		isPageSeo(page.data.seo) ? page.data.seo : fallbackSeo(page.url.pathname)
+	);
+	const isErrorPage = $derived(page.status >= 400 || page.error !== null);
+	const robots = $derived<PageSeo['robots']>(isErrorPage ? 'noindex,follow' : seo.robots);
+	const jsonLd = $derived(!isErrorPage && seo.jsonLd ? jsonLdScript(seo.jsonLd) : '');
+	const image = $derived(!isErrorPage ? (seo.image ?? null) : null);
 </script>
 
 <svelte:head>
 	<link rel="icon" type="image/x-icon" href={favicon} />
-	<meta name="viewport" content="width=device-width, initial-scale=1" />
-	<title>Clima Visual</title>
-	<link rel="canonical" href={canonical} />
-	<link rel="alternate" hreflang="en" href={canonical} />
-	<link rel="alternate" hreflang="x-default" href={canonical} />
+	<title>{seo.title}</title>
+	<meta name="description" content={seo.description} />
+	<link rel="canonical" href={seo.canonical} />
+	<meta name="robots" content={robots} />
+	<meta property="og:type" content="website" />
+	<meta property="og:site_name" content="Clima Visual" />
+	<meta property="og:locale" content="es_ES" />
+	<meta property="og:title" content={seo.title} />
+	<meta property="og:description" content={seo.description} />
+	<meta property="og:url" content={seo.canonical} />
+	{#if image}
+		<meta property="og:image" content={image} />
+		<meta name="twitter:card" content="summary_large_image" />
+	{/if}
+	{#if jsonLd}
+		{@html jsonLd}
+	{/if}
+	<link rel="alternate" hreflang="es-ES" href={seo.canonical} />
+	<link rel="alternate" hreflang="x-default" href={seo.canonical} />
 </svelte:head>
 
 {@render children()}
