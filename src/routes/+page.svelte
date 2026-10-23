@@ -49,11 +49,11 @@
 
 <main class="home">
 	<section class="hero">
-		<p class="eyebrow">Clima Visual Experimental</p>
-		<h1>Clima por ciudad con fondo híbrido</h1>
+		<p class="eyebrow">Clima Visual</p>
+		<h1>Tiempo por municipio en España</h1>
 		<p class="lead">
-			Escribe una ciudad en la URL (`/oviedo`) o usa el formulario. Se prioriza AEMET y puedes filtrar
-			por provincia cuando haya ambigüedad.
+			Consulta la temperatura, la lluvia y el viento de cualquier municipio. Los datos proceden de
+			AEMET. Si el nombre existe en varias provincias, puedes acotar la búsqueda.
 		</p>
 
 		<form class="search" onsubmit={searchCity}>

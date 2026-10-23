@@ -211,6 +211,10 @@ export class AemetWeatherProvider implements WeatherProvider {
 			.sort((a, b) => a.localeCompare(b, 'es'));
 	}
 
+	async listMunicipalities(): Promise<Municipality[]> {
+		return this.getMunicipalities();
+	}
+
 	async listMunicipalitiesByProvince(province: string): Promise<Municipality[]> {
 		const normalizedProvince = normalizeSearchValue(province);
 		const municipalities = await this.getMunicipalities();

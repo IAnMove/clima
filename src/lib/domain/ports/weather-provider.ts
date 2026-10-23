@@ -28,5 +28,6 @@ export interface WeatherProvider {
 	resolveMunicipality(input: ResolveMunicipalityInput): Promise<MunicipalityResolution>;
 	getWeatherByMunicipalityCode(code: string): Promise<WeatherReport>;
 	listProvinces(): Promise<string[]>;
+	listMunicipalities(): Promise<Municipality[]>;
 	listMunicipalitiesByProvince(province: string): Promise<Municipality[]>;
 }

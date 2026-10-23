@@ -1,4 +1,7 @@
+import { buildCitySeo } from '$lib/seo';
 import type { PageLoad } from './$types';
+
+export const prerender = false;
 
 export const load: PageLoad = async ({ fetch, params, url }) => {
 	const isDebugMode = params.city.toLowerCase() === 'debug-test';
@@ -15,17 +18,29 @@ export const load: PageLoad = async ({ fetch, params, url }) => {
 		query.set('code', code);
 	}
 
-	const response = await fetch(
-		`/api/weather/${encodeURIComponent(dataCity)}${query.size ? `?${query.toString()}` : ''}`
-	);
-	const payload = (await response.json()) as unknown;
+	let statusCode = 500;
+	let payload: unknown = {
+		status: 'error',
+		message: 'No se pudo obtener la información meteorológica.'
+	};
+
+	try {
+		const response = await fetch(
+			`/api/weather/${encodeURIComponent(dataCity)}${query.size ? `?${query.toString()}` : ''}`
+		);
+		statusCode = response.status;
+		payload = (await response.json()) as unknown;
+	} catch {
+		statusCode = 503;
+	}
 
 	return {
 		citySlug: params.city,
 		isDebugMode,
-		statusCode: response.status,
+		statusCode,
 		payload,
 		province,
-		code
+		code,
+		seo: buildCitySeo(params.city, payload, isDebugMode)
 	};
 };

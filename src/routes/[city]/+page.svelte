@@ -5,6 +5,7 @@
 	import type { WeatherRenderer } from '$lib/components/weather-fx/types';
 	import type { Municipality } from '$lib/domain/municipality';
 	import type { WeatherCondition, WeatherImage } from '$lib/domain/weather';
+	import { labelFromSlug } from '$lib/seo';
 	import { toSlug } from '$lib/utils/text';
 	import type { PageData } from './$types';
 
@@ -40,6 +41,7 @@
 	let customObjectUrl = $state<string | null>(null);
 	let imageSeed = $state('');
 	let now = $state(new Date());
+	let visualsReady = $state(false);
 	let debugTimeOffsetMinutes = $state(0);
 	let selectedProvince = $state('');
 	let provinceMunicipalities = $state<Municipality[]>([]);
@@ -64,6 +66,17 @@
 	const municipality = $derived(
 		status === 'ok' ? (payload.municipality as GenericPayload | null) : null
 	);
+	const placeName = $derived.by(() => {
+		const fromReport = report?.location?.name;
+		const fromMunicipality = municipality?.name;
+		if (typeof fromReport === 'string' && fromReport.trim()) {
+			return fromReport.trim();
+		}
+		if (typeof fromMunicipality === 'string' && fromMunicipality.trim()) {
+			return fromMunicipality.trim();
+		}
+		return labelFromSlug(String(data.citySlug ?? ''));
+	});
 	const hourly = $derived((report?.hourly as GenericPayload[] | undefined) ?? []);
 	const daily = $derived((report?.daily as GenericPayload[] | undefined) ?? []);
 
@@ -124,6 +137,7 @@
 	const clampedDebugOffsetMinutes = $derived(clampDebugTimeOffset(debugTimeOffsetMinutes));
 
 	onMount(() => {
+		visualsReady = true;
 		autoRenderer = detectPreferredRenderer();
 
 		const tickMs = isDebugMode ? 1_000 : 60_000;
@@ -709,7 +723,7 @@
 	{#if status === 'ok' && report}
 		<div
 			class={`scene mode-${mode} condition-${activeWeatherCondition} ${compactMode ? 'compact' : ''}`}
-			style={sceneToneStyle}
+			style={visualsReady ? sceneToneStyle : undefined}
 		>
 			{#if mode === 'photo' && activeImage?.url}
 				<div class="photo" style={`background-image:url('${toBackgroundImageCss(activeImage.url)}')`}></div>
@@ -856,7 +870,7 @@
 				<header class="hero">
 					<div>
 						<p class="chip">Fuente: {payload.provider?.toUpperCase() ?? 'API'}</p>
-						<h1>{report.location?.name ?? municipality?.name ?? 'Ciudad'}</h1>
+						<h1>Tiempo en {placeName}</h1>
 						<p class="subtitle">
 							{report.location?.province ?? municipality?.province ?? 'Espa\u00f1a'} &middot; c&oacute;digo
 							{report.location?.code ?? municipality?.code}
@@ -979,10 +993,10 @@
 								<div class="debug-time">
 									<div class="debug-time-head">
 										<p class="debug-label">Reloj minimal</p>
-										<strong>{debugClockLabel}</strong>
+										<strong>{visualsReady ? debugClockLabel : '--:--'}</strong>
 									</div>
 									<p class="debug-time-info">
-										Real: {formatClockLabel(now)} &middot; offset: {debugOffsetLabel}
+										Real: {visualsReady ? formatClockLabel(now) : '--:--'} &middot; offset: {debugOffsetLabel}
 									</p>
 									<input
 										class="debug-time-number"
@@ -1096,7 +1110,7 @@
 		</div>
 	{:else if status === 'ambiguous'}
 		<section class="state">
-			<h1>Hay varios municipios con ese nombre</h1>
+			<h1>Hay varios municipios llamados {placeName}</h1>
 			<p>{payload.message}</p>
 			<div class="list">
 				{#each (payload.candidates ?? []) as candidate}
@@ -1108,7 +1122,7 @@
 		</section>
 	{:else if status === 'not_found'}
 		<section class="state">
-			<h1>Municipio no encontrado</h1>
+			<h1>No encontramos el municipio {placeName}</h1>
 			<p>{payload.message}</p>
 
 			{#if (payload.suggestions ?? []).length > 0}
@@ -1174,7 +1188,7 @@
 		</section>
 	{:else}
 		<section class="state">
-			<h1>Error cargando el clima</h1>
+			<h1>Tiempo en {placeName}</h1>
 			<p>{payload.message ?? 'No se pudo obtener la informaci\u00f3n meteorol\u00f3gica.'}</p>
 		</section>
 	{/if}
