@@ -909,6 +909,51 @@
 		const group = event.currentTarget as HTMLElement | null;
 		requestAnimationFrame(() => group?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus());
 	}
+
+	// --- rediseño v2 it2
+	// --- rediseño v3
+	const CV_TZ = 'Europe/Madrid';
+	function cvHourInTz(d: Date): number {
+		try {
+			const parts = new Intl.DateTimeFormat('es-ES', { hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: CV_TZ }).formatToParts(d);
+			const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN);
+			const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+			return Number.isFinite(h) ? h + m / 60 : d.getHours() + d.getMinutes() / 60;
+		} catch {
+			return d.getHours() + d.getMinutes() / 60;
+		}
+	}
+	function cvIsNightHour(h: number): boolean {
+		return h < 7 || h >= 21;
+	}
+	const cvLocalHour = $derived(cvHourInTz(activeClock));
+	const cvHeroNight = $derived(visualsReady && cvIsNightHour(cvLocalHour));
+	function cvIsNightIso(iso: unknown): boolean {
+		if (typeof iso !== 'string') return false;
+		const d = new Date(iso);
+		return Number.isNaN(d.getTime()) ? false : cvIsNightHour(cvHourInTz(d));
+	}
+	function cvFinite(v: unknown): v is number {
+		return typeof v === 'number' && Number.isFinite(v);
+	}
+	const cvHoursShown = $derived(cvHours.filter((h, i) => i === 0 || cvFinite(h.temperatureC)));
+	const cvNowTemp = $derived.by(() => {
+		if (cvShownTemp !== null) return cvShownTemp;
+		const t = cvHours[0]?.temperatureC;
+		return cvFinite(t) ? Math.round(t) : null;
+	});
+	const cvTodayMax = $derived.by(() => {
+		const f = cvToday?.maxTemperatureC;
+		if (cvFinite(f) && cvTempValue !== null) return Math.max(f, cvTempValue);
+		return cvFinite(f) ? f : cvTempValue;
+	});
+	const cvNoPrecip = $derived(precipitationLevelLabel === 'sin precipitación');
+	const cvIntensityLabel = $derived(cvNoPrecip ? 'Ninguna' : capitalize(precipitationLevelLabel));
+	const cvBeaufort = $derived.by(() => {
+		const limits = [1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118];
+		const idx = limits.findIndex((l) => currentWindKmh < l);
+		return idx === -1 ? 12 : idx;
+	});
 </script>
 <svelte:window onpointerdown={onWindowPointerDown} onkeydown={onWindowKeydown} onscroll={onCvScroll} />
 
@@ -992,6 +1037,33 @@
 	</svg>
 {/snippet}
 
+{#snippet skyline()}
+	<div class={`cv-illu ${isDaytime ? 'cv-illu--day' : 'cv-illu--night'}`}>
+		<div class={`cv-celestial ${isDaytime ? 'cv-celestial--sun' : 'cv-celestial--moon'}`} style={celestialStyle}></div>
+		<svg class="cv-illu-svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMax slice">
+			<ellipse class="cv-illu-haze" cx="800" cy="695" rx="760" ry="142"></ellipse>
+			<path class="cv-illu-back" d="M0 675 L48 675 L48 612 L98 612 L98 675 L156 675 L156 544 L190 544 L206 518 L222 544 L262 544 L262 675 L324 675 L324 585 L372 585 L372 675 L430 675 L430 520 L472 520 L472 675 L548 675 L548 560 L588 560 L606 534 L624 560 L672 560 L672 675 L740 675 L740 598 L798 598 L798 675 L872 675 L872 540 L918 540 L918 675 L994 675 L994 575 L1042 575 L1042 675 L1116 675 L1116 548 L1154 548 L1174 508 L1194 548 L1246 548 L1246 675 L1320 675 L1320 594 L1378 594 L1378 675 L1450 675 L1450 534 L1496 534 L1496 675 L1600 675 L1600 900 L0 900 Z"></path>
+			<path class="cv-illu-mid" d="M0 760 L70 760 L70 646 L124 646 L124 760 L186 760 L186 606 L254 606 L254 760 L332 760 L332 636 L384 636 L384 760 L468 760 L468 590 L522 590 L522 760 L602 760 L602 624 L660 624 L660 760 L742 760 L742 566 L798 566 L798 760 L876 760 L876 622 L936 622 L936 760 L1012 760 L1012 586 L1070 586 L1070 760 L1148 760 L1148 630 L1212 630 L1212 760 L1286 760 L1286 596 L1348 596 L1348 760 L1424 760 L1424 642 L1488 642 L1488 760 L1600 760 L1600 900 L0 900 Z"></path>
+			<path class="cv-illu-front" d="M0 900 L0 835 L84 835 L84 728 L146 728 L146 835 L230 835 L230 690 L300 690 L300 835 L384 835 L384 702 L440 702 L470 668 L500 702 L560 702 L560 835 L644 835 L644 648 L724 648 L724 835 L806 835 L806 712 L868 712 L868 835 L956 835 L956 666 L1032 666 L1032 835 L1118 835 L1118 718 L1186 718 L1186 835 L1274 835 L1274 680 L1352 680 L1352 835 L1442 835 L1442 736 L1512 736 L1512 835 L1600 835 L1600 900 Z"></path>
+			<g class="cv-illu-windows">
+				<rect x="102" y="776" width="9" height="12"></rect><rect x="248" y="744" width="9" height="12"></rect>
+				<rect x="408" y="756" width="9" height="12"></rect><rect x="676" y="726" width="9" height="12"></rect>
+				<rect x="982" y="718" width="9" height="12"></rect><rect x="1306" y="734" width="9" height="12"></rect>
+				<rect x="494" y="660" width="8" height="10"></rect><rect x="766" y="646" width="8" height="10"></rect>
+				<rect x="1038" y="664" width="8" height="10"></rect><rect x="1318" y="662" width="8" height="10"></rect>
+			</g>
+			<path class="cv-illu-road" d="M0 815 C220 802 456 832 688 818 C986 798 1276 832 1600 816 L1600 900 L0 900 Z"></path>
+		</svg>
+	</div>
+{/snippet}
+
+{#snippet stateBackdrop()}
+	<div class="cv-state-backdrop" aria-hidden="true" style={visualsReady ? sceneToneStyle : undefined}>
+		{@render skyline()}
+		<div class="cv-scrim"></div>
+	</div>
+{/snippet}
+
 {#snippet stateBack()}
 	<a class="cv-back cv-back--state" href="/">{@render icon('arrow-left')}<span>Volver al inicio</span></a>
 {/snippet}
@@ -1007,112 +1079,27 @@
 	</button>
 {/snippet}
 
+{#snippet creditBody()}
+	Imagen: {activeImage?.attributionText}
+	{#if activeImage?.attributionUrl}
+		· <a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente<span class="cv-sr"> (se abre en una pestaña nueva)</span></a>
+	{/if}
+{/snippet}
+
 <a class="cv-skip" href="#cv-forecast">Saltar a la previsión</a>
 
 <main id="contenido" class={`cv-page cv-page--${status}`} tabindex="-1">
 	{#if status === 'ok' && report}
 		<div
-			class={`cv-layout cv-mode--${mode} cv-cond--${activeWeatherCondition} ${isDaytime ? 'cv-is-day' : 'cv-is-night'}`}
+			class={`cv-layout cv-mode--${mode} cv-cond--${activeWeatherCondition} ${cvHeroNight ? 'cv-is-night' : 'cv-is-day'}`}
 			style={visualsReady ? sceneToneStyle : undefined}
 		>
-			<header class={`cv-topbar ${cvScrolled ? 'cv-topbar--solid' : ''}`}>
-				<a class="cv-back" href="/">
-					{@render icon('arrow-left')}
-					<span>Clima Visual</span>
-				</a>
-
-				<div
-					class="cv-modes"
-					role="radiogroup"
-					aria-label="Modo visual"
-					style={`--cv-mode-index:${cvModeIndex};--cv-mode-count:${modeOptions.length}`}
-					tabindex="-1"
-					onkeydown={onCvModesKeydown}
-				>
-					<span class="cv-mode-thumb" aria-hidden="true"></span>
-					{#each modeOptions as option (option.value)}
-						<button
-							type="button"
-							class="cv-mode"
-							role="radio"
-							aria-checked={mode === option.value}
-							tabindex={mode === option.value ? 0 : -1}
-							onclick={() => (mode = option.value)}
-						>
-							{@render icon(option.icon)}
-							<span class="cv-mode-label">{option.label}</span>
-						</button>
-					{/each}
-				</div>
-
-				{#if mode === 'photo'}
-					<div class="cv-imgmenu-wrap" bind:this={imageMenuWrap}>
-						<button
-							class="cv-imgbtn"
-							type="button"
-							onclick={toggleImageMenu}
-							aria-expanded={imageMenuOpen}
-							aria-controls="cv-image-menu"
-							aria-label="Cambiar imagen"
-							bind:this={imageMenuToggleEl}
-						>
-							{@render icon('image')}
-							<span class="cv-imgbtn-label" aria-hidden="true">Cambiar imagen</span>
-						</button>
-						{#if imageMenuOpen}
-							<div id="cv-image-menu" class="cv-imgmenu" role="group" aria-label="Opciones de imagen de fondo">
-								<button type="button" class="cv-imgmenu-item" onclick={() => void applyRandomImage()} disabled={loadingRandomImage} aria-busy={loadingRandomImage}>
-									{#if loadingRandomImage}
-										<span class="cv-spinner" aria-hidden="true"></span>
-										<span class="cv-imgmenu-title">Buscando…</span>
-									{:else}
-										{@render icon('shuffle')}
-										<span class="cv-imgmenu-title">Aleatoria de esta ciudad</span>
-									{/if}
-								</button>
-								<label class="cv-imgmenu-item cv-imgmenu-file">
-									{@render icon('upload')}
-									<span class="cv-imgmenu-text">
-										<span class="cv-imgmenu-title">Imagen de tu dispositivo</span>
-										<span class="cv-imgmenu-note">No se sube al servidor</span>
-									</span>
-									<input class="cv-sr" type="file" accept="image/*" onchange={onCustomImageFileChange} />
-								</label>
-								<button type="button" class="cv-imgmenu-item" onclick={restoreServerImage} disabled={!customImage}>
-									{@render icon('undo')}
-									<span class="cv-imgmenu-title">Volver a la original</span>
-								</button>
-								{#if imageMenuError}
-									<p class="cv-imgmenu-error" role="alert">{@render icon('alert')} {imageMenuError}</p>
-								{/if}
-							</div>
-						{/if}
-					</div>
-				{/if}
-			</header>
-
 			<div class="cv-stage">
 				<div class="cv-stage-media" aria-hidden="true">
 					{#if mode !== 'minimal' && activeImage?.url}
 						<div class="cv-photo" style={`background-image:url('${toBackgroundImageCss(activeImage.url)}')`}></div>
 					{:else}
-						<div class={`cv-illu ${isDaytime ? 'cv-illu--day' : 'cv-illu--night'}`}>
-							<div class={`cv-celestial ${isDaytime ? 'cv-celestial--sun' : 'cv-celestial--moon'}`} style={celestialStyle}></div>
-							<svg class="cv-illu-svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMax slice">
-								<ellipse class="cv-illu-haze" cx="800" cy="695" rx="760" ry="142"></ellipse>
-								<path class="cv-illu-back" d="M0 675 L48 675 L48 612 L98 612 L98 675 L156 675 L156 544 L190 544 L206 518 L222 544 L262 544 L262 675 L324 675 L324 585 L372 585 L372 675 L430 675 L430 520 L472 520 L472 675 L548 675 L548 560 L588 560 L606 534 L624 560 L672 560 L672 675 L740 675 L740 598 L798 598 L798 675 L872 675 L872 540 L918 540 L918 675 L994 675 L994 575 L1042 575 L1042 675 L1116 675 L1116 548 L1154 548 L1174 508 L1194 548 L1246 548 L1246 675 L1320 675 L1320 594 L1378 594 L1378 675 L1450 675 L1450 534 L1496 534 L1496 675 L1600 675 L1600 900 L0 900 Z"></path>
-								<path class="cv-illu-mid" d="M0 760 L70 760 L70 646 L124 646 L124 760 L186 760 L186 606 L254 606 L254 760 L332 760 L332 636 L384 636 L384 760 L468 760 L468 590 L522 590 L522 760 L602 760 L602 624 L660 624 L660 760 L742 760 L742 566 L798 566 L798 760 L876 760 L876 622 L936 622 L936 760 L1012 760 L1012 586 L1070 586 L1070 760 L1148 760 L1148 630 L1212 630 L1212 760 L1286 760 L1286 596 L1348 596 L1348 760 L1424 760 L1424 642 L1488 642 L1488 760 L1600 760 L1600 900 L0 900 Z"></path>
-								<path class="cv-illu-front" d="M0 900 L0 835 L84 835 L84 728 L146 728 L146 835 L230 835 L230 690 L300 690 L300 835 L384 835 L384 702 L440 702 L470 668 L500 702 L560 702 L560 835 L644 835 L644 648 L724 648 L724 835 L806 835 L806 712 L868 712 L868 835 L956 835 L956 666 L1032 666 L1032 835 L1118 835 L1118 718 L1186 718 L1186 835 L1274 835 L1274 680 L1352 680 L1352 835 L1442 835 L1442 736 L1512 736 L1512 835 L1600 835 L1600 900 Z"></path>
-								<g class="cv-illu-windows">
-									<rect x="102" y="776" width="9" height="12"></rect><rect x="248" y="744" width="9" height="12"></rect>
-									<rect x="408" y="756" width="9" height="12"></rect><rect x="676" y="726" width="9" height="12"></rect>
-									<rect x="982" y="718" width="9" height="12"></rect><rect x="1306" y="734" width="9" height="12"></rect>
-									<rect x="494" y="660" width="8" height="10"></rect><rect x="766" y="646" width="8" height="10"></rect>
-									<rect x="1038" y="664" width="8" height="10"></rect><rect x="1318" y="662" width="8" height="10"></rect>
-								</g>
-								<path class="cv-illu-road" d="M0 815 C220 802 456 832 688 818 C986 798 1276 832 1600 816 L1600 900 L0 900 Z"></path>
-							</svg>
-						</div>
+						{@render skyline()}
 					{/if}
 				</div>
 
@@ -1127,49 +1114,122 @@
 					/>
 				</div>
 				<div class="cv-scrim" aria-hidden="true"></div>
+				<div class="cv-scrim cv-scrim--side" aria-hidden="true"></div>
+
+				<a class="cv-back cv-back--stage" href="/">
+					{@render icon('arrow-left')}
+					<span>Clima Visual</span>
+				</a>
 
 				<section class="cv-hero" aria-labelledby="cv-title">
 					<p class="cv-eyebrow cv-reveal" style="--i:0">
 						{String(payload.provider ?? 'AEMET').toUpperCase()}{#if cvUpdated} · actualizado {cvUpdated}{/if}
 					</p>
-					<h1 id="cv-title" class="cv-city cv-reveal" style="--i:1">
-						<span class="cv-city-pre">Tiempo en </span>{placeName}
-					</h1>
-					<p class="cv-place cv-reveal" style="--i:2">
-						{@render icon('pin')}
-						<span>{cvProvince}{#if cvCode} · {cvCode}{/if}</span>
-					</p>
 					<p
 						class="cv-temp cv-reveal"
-						style="--i:3"
+						style="--i:1"
 						aria-label={cvTempValue !== null ? `${cvTempValue} grados` : 'Temperatura no disponible'}
 					>
-						<span aria-hidden="true">{cvShownTemp ?? '--'}</span><span class="cv-temp-deg" aria-hidden="true">°</span>
+						<span class="cv-temp-num" aria-hidden="true">{cvShownTemp ?? '--'}</span><span class="cv-temp-deg" aria-hidden="true">°</span>
 					</p>
-					<p class="cv-cond cv-reveal" style="--i:4">
-						{@render weatherIcon(activeWeatherCondition, showNightIcon, 'cv-icon--xl')}
-						<span>{report.current?.description ?? 'Sin descripción'}</span>
+					<h1 id="cv-title" class="cv-city cv-reveal" style="--i:2">
+						<span class="cv-city-pre">Tiempo en </span>{placeName}
+					</h1>
+					<p class="cv-place cv-reveal" style="--i:3">
+						{@render icon('pin')}
+						<span>{cvProvince}</span>
 					</p>
-					{#if cvToday}
-						<p class="cv-minmax cv-reveal" style="--i:5">
-							<span><span aria-hidden="true">↑</span><span class="cv-sr">Máxima </span>{formatTemp(cvToday.maxTemperatureC)}</span>
-							<span><span aria-hidden="true">↓</span><span class="cv-sr">Mínima </span>{formatTemp(cvToday.minTemperatureC)}</span>
+					<div class="cv-hero-row cv-reveal" style="--i:4">
+						<p class="cv-cond cv-pill">
+							{@render weatherIcon(activeWeatherCondition, cvHeroNight, 'cv-icon--md')}
+							<span>{report.current?.description ?? 'Sin descripción'}</span>
 						</p>
-					{/if}
+						{#if cvToday}
+							<p class="cv-minmax">
+								<span class="cv-minmax-hi"><span class="cv-minmax-arrow" aria-hidden="true">↑</span><span class="cv-sr">Máxima </span>{formatTemp(cvTodayMax)}</span>
+								<span class="cv-minmax-lo"><span class="cv-minmax-arrow" aria-hidden="true">↓</span><span class="cv-sr">Mínima </span>{formatTemp(cvToday.minTemperatureC)}</span>
+							</p>
+						{/if}
+					</div>
 				</section>
 
-				{#if mode !== 'all-info' && activeImage?.attributionText && mode === 'photo'}
-					<p class="cv-credit cv-credit--stage">
-						Imagen: {activeImage.attributionText}
-						{#if activeImage.attributionUrl}
-							· <a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente<span class="cv-sr"> (se abre en una pestaña nueva)</span></a>
-						{/if}
-					</p>
+				{#if mode === 'photo' && activeImage?.attributionText}
+					<p class="cv-credit cv-credit--stage">{@render creditBody()}</p>
 				{/if}
 			</div>
 
 			<div id="cv-forecast" class="cv-panel cv-sheet" tabindex="-1">
-				<span class="cv-sheet-grip" aria-hidden="true"></span>
+				<header class={`cv-panel-head ${cvScrolled ? 'cv-panel-head--solid' : ''}`}>
+					<div
+						class="cv-modes"
+						role="radiogroup"
+						aria-label="Modo visual"
+						style={`--cv-mode-index:${cvModeIndex};--cv-mode-count:${modeOptions.length}`}
+						tabindex="-1"
+						onkeydown={onCvModesKeydown}
+					>
+						<span class="cv-mode-thumb" aria-hidden="true"></span>
+						{#each modeOptions as option (option.value)}
+							<button
+								type="button"
+								class={`cv-mode ${mode === option.value ? 'cv-mode--active' : ''}`}
+								role="radio"
+								aria-checked={mode === option.value}
+								aria-label={option.label}
+								tabindex={mode === option.value ? 0 : -1}
+								onclick={() => (mode = option.value)}
+							>
+								{@render icon(option.icon)}
+								<span class="cv-mode-label" aria-hidden="true">{option.label}</span>
+							</button>
+						{/each}
+					</div>
+
+					{#if mode === 'photo'}
+						<div class="cv-imgmenu-wrap" bind:this={imageMenuWrap}>
+							<button
+								class="cv-imgbtn"
+								type="button"
+								onclick={toggleImageMenu}
+								aria-expanded={imageMenuOpen}
+								aria-controls="cv-image-menu"
+								aria-label="Cambiar imagen"
+								title="Cambiar imagen"
+								bind:this={imageMenuToggleEl}
+							>
+								{@render icon('image')}
+							</button>
+							{#if imageMenuOpen}
+								<div id="cv-image-menu" class="cv-imgmenu" role="group" aria-label="Opciones de imagen de fondo">
+									<button type="button" class="cv-imgmenu-item" onclick={() => void applyRandomImage()} disabled={loadingRandomImage} aria-busy={loadingRandomImage}>
+										{#if loadingRandomImage}
+											<span class="cv-spinner" aria-hidden="true"></span>
+											<span class="cv-imgmenu-title">Buscando…</span>
+										{:else}
+											{@render icon('shuffle')}
+											<span class="cv-imgmenu-title">Aleatoria de esta ciudad</span>
+										{/if}
+									</button>
+									<label class="cv-imgmenu-item cv-imgmenu-file">
+										{@render icon('upload')}
+										<span class="cv-imgmenu-text">
+											<span class="cv-imgmenu-title">Imagen de tu dispositivo</span>
+											<span class="cv-imgmenu-note">No se sube al servidor</span>
+										</span>
+										<input class="cv-sr" type="file" accept="image/*" onchange={onCustomImageFileChange} />
+									</label>
+									<button type="button" class="cv-imgmenu-item" onclick={restoreServerImage} disabled={!customImage}>
+										{@render icon('undo')}
+										<span class="cv-imgmenu-title">Volver a la original</span>
+									</button>
+									{#if imageMenuError}
+										<p class="cv-imgmenu-error" role="alert">{@render icon('alert')} {imageMenuError}</p>
+									{/if}
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</header>
 
 				{#if isDebugMode}
 					<section class="cv-debug" aria-label="Panel de depuración">
@@ -1212,20 +1272,30 @@
 
 				<section class="cv-band cv-reveal" style="--i:6" aria-labelledby="cv-hours-title">
 					<h2 id="cv-hours-title" class="cv-sectitle">{@render icon('clock')} Próximas horas</h2>
-					{#if cvHours.length > 0}
+					{#if cvHoursShown.length > 0}
 						<ol class="cv-hours" tabindex="0" aria-label="Previsión por horas">
-							{#each cvHours as hour, index}
-								<li class={`cv-hour ${index === 0 ? 'cv-hour--now' : ''}`}>
-									<span class="cv-hour-time">{index === 0 ? 'Ahora' : formatTime(hour.isoTime)}</span>
-									{@render weatherIcon(normalizeWeatherCondition(hour.condition), false, 'cv-icon--lg')}
-									<span class="cv-sr">{hour.description ?? ''}</span>
-									<span class="cv-hour-temp">{formatTemp(hour.temperatureC)}</span>
-									{#if cvHasPop(hour.precipitationProbabilityPercent)}
-										<span class="cv-hour-pop">
-											{formatPercent(hour.precipitationProbabilityPercent)}<span class="cv-sr"> de probabilidad de lluvia</span>
-										</span>
-									{/if}
-								</li>
+							{#each cvHoursShown as hour, index}
+								{#if index === 0}
+									<li class="cv-hour cv-hour--now">
+										<span class="cv-hour-time">Ahora</span>
+										{@render weatherIcon(activeWeatherCondition, cvHeroNight, 'cv-icon--xl')}
+										<span class="cv-sr">{report.current?.description ?? hour.description ?? ''}</span>
+										<span class="cv-hour-temp">{cvNowTemp !== null ? `${cvNowTemp}°` : formatTemp(hour.temperatureC)}</span>
+										{#if cvHasPop(hour.precipitationProbabilityPercent)}
+											<span class="cv-hour-pop">{formatPercent(hour.precipitationProbabilityPercent)}<span class="cv-sr"> de probabilidad de lluvia</span></span>
+										{/if}
+									</li>
+								{:else}
+									<li class="cv-hour">
+										<span class="cv-hour-time">{formatTime(hour.isoTime)}</span>
+										{@render weatherIcon(normalizeWeatherCondition(hour.condition), visualsReady && cvIsNightIso(hour.isoTime), 'cv-icon--lg')}
+										<span class="cv-sr">{hour.description ?? ''}</span>
+										<span class="cv-hour-temp">{formatTemp(hour.temperatureC)}</span>
+										{#if cvHasPop(hour.precipitationProbabilityPercent)}
+											<span class="cv-hour-pop">{formatPercent(hour.precipitationProbabilityPercent)}<span class="cv-sr"> de probabilidad de lluvia</span></span>
+										{/if}
+									</li>
+								{/if}
 							{/each}
 						</ol>
 					{:else}
@@ -1238,7 +1308,7 @@
 					{#if daily.length > 0}
 						<ol class="cv-days">
 							{#each daily as day, index}
-								<li class="cv-day">
+								<li class={`cv-day ${index === 0 ? 'cv-day--today' : ''}`}>
 									<span class="cv-day-name">
 										<span aria-hidden="true">{cvDayLabel(day.isoDate, index)}</span>
 										<span class="cv-sr">{index < 2 ? cvDayLabel(day.isoDate, index) + ', ' : ''}{cvDayLong(day.isoDate)}</span>
@@ -1254,7 +1324,7 @@
 									</span>
 									<span class="cv-day-min"><span class="cv-sr">Mínima </span>{formatTemp(day.minTemperatureC)}</span>
 									<span class="cv-range" aria-hidden="true"><span class="cv-range-fill" style={cvRangeStyle(day)}></span></span>
-									<span class="cv-day-max"><span class="cv-sr">Máxima </span>{formatTemp(day.maxTemperatureC)}</span>
+									<span class="cv-day-max"><span class="cv-sr">Máxima </span>{formatTemp(index === 0 ? cvTodayMax : day.maxTemperatureC)}</span>
 								</li>
 							{/each}
 						</ol>
@@ -1267,35 +1337,42 @@
 					<h2 id="cv-metrics-title" class="cv-sectitle">{@render icon('list')} Detalles</h2>
 					<dl class={`cv-metrics ${mode === 'all-info' ? 'cv-metrics--full' : ''}`}>
 						<div class="cv-metric">
-							<dt>{@render icon('droplet')} Precipitación</dt>
+							<dt>{@render icon('droplet')} <span aria-hidden="true">Lluvia</span><span class="cv-sr">Probabilidad de precipitación</span></dt>
 							<dd>
 								<span class="cv-metric-value">{formatPercent(activePrecipitationProbability)}</span>
 								<span class="cv-meter cv-meter--rain" aria-hidden="true"><span style={`width:${activePrecipitationProbability}%`}></span></span>
 							</dd>
 						</div>
 						<div class="cv-metric">
-							<dt>{@render icon('umbrella')} Intensidad</dt>
-							<dd><span class="cv-metric-value">{capitalize(precipitationLevelLabel)}</span></dd>
+							<dt>{@render icon('umbrella')} <span aria-hidden="true">Intens.</span><span class="cv-sr">Intensidad</span></dt>
+							<dd>
+								<span class={`cv-metric-value ${cvNoPrecip ? 'cv-metric-value--none' : ''}`}>
+									{#if cvNoPrecip}
+										<svg class="cv-icon cv-icon--strike" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 3.2s6 6.4 6 10.8a6 6 0 0 1-12 0c0-4.4 6-10.8 6-10.8z" /><path d="M4 4l16 16" /></svg>
+									{/if}
+									{cvIntensityLabel}
+								</span>
+								<span class="cv-meter cv-meter--steps" aria-hidden="true"><span style={`width:${cvNoPrecip ? 0 : precipitationLevelLabel === 'baja' ? 33 : precipitationLevelLabel === 'media' ? 66 : 100}%`}></span></span>
+							</dd>
 						</div>
 						<div class="cv-metric">
 							<dt>{@render icon('humidity')} Humedad</dt>
 							<dd>
 								<span class="cv-metric-value">{formatPercent(report.current?.humidityPercent)}</span>
-								{#if currentHumidity !== null}
-									<span class="cv-meter" aria-hidden="true"><span style={`width:${currentHumidity}%`}></span></span>
-								{/if}
+								<span class="cv-meter" aria-hidden="true"><span style={`width:${currentHumidity ?? 0}%`}></span></span>
 							</dd>
 						</div>
 						<div class="cv-metric">
 							<dt>{@render icon('wind')} Viento</dt>
 							<dd>
-								<span class="cv-metric-value">{formatWind(report.current?.windKmh)}</span>
-								{#if cvWindDeg !== null}
-									<span class="cv-wind-arrow" style={`transform:rotate(${cvWindDeg}deg)`} aria-hidden="true">
-										<svg class="cv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M6 14l6 6 6-6" /></svg>
+								<span class="cv-metric-value">
+									<span class={`cv-wind-arrow ${cvWindDeg === null ? 'cv-wind-arrow--muted' : ''}`} style={`transform:rotate(${cvWindDeg ?? 0}deg)`} aria-hidden="true">
+										<svg class="cv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M6 14l6 6 6-6" /></svg>
 									</span>
-									<span class="cv-sr">Dirección {Math.round(cvWindDeg)} grados</span>
-								{/if}
+									{formatWind(report.current?.windKmh)}
+								</span>
+								<span class="cv-meter cv-meter--wind" aria-hidden="true"><span style={`width:${Math.round((cvBeaufort / 12) * 100)}%`}></span></span>
+								<span class="cv-sr">Fuerza {cvBeaufort} en la escala Beaufort{#if cvWindDeg !== null}, dirección {Math.round(cvWindDeg)} grados{/if}</span>
 							</dd>
 						</div>
 						{#if mode === 'all-info'}
@@ -1321,14 +1398,9 @@
 
 				<footer class="cv-panel-foot">
 					{#if mode === 'photo' && activeImage?.attributionText}
-						<p class="cv-credit">
+						<p class="cv-credit cv-credit--foot">
 							{@render icon('photo')}
-							<span>
-								Imagen: {activeImage.attributionText}
-								{#if activeImage.attributionUrl}
-									· <a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente<span class="cv-sr"> (se abre en una pestaña nueva)</span></a>
-								{/if}
-							</span>
+							<span>{@render creditBody()}</span>
 						</p>
 					{/if}
 					<p class="cv-credit">Datos oficiales de AEMET</p>
@@ -1337,6 +1409,7 @@
 		</div>
 	{:else if status === 'ambiguous'}
 		<div class="cv-state">
+			{@render stateBackdrop()}
 			<section class="cv-state-card" aria-labelledby="state-title">
 				{@render stateBack()}
 				<span class="cv-state-icon">{@render icon('pin')}</span>
@@ -1351,6 +1424,7 @@
 		</div>
 	{:else if status === 'not_found'}
 		<div class="cv-state">
+			{@render stateBackdrop()}
 			<section class="cv-state-card" aria-labelledby="state-title">
 				{@render stateBack()}
 				<span class="cv-state-icon">{@render icon('search')}</span>
@@ -1417,6 +1491,7 @@
 		</div>
 	{:else}
 		<div class="cv-state">
+			{@render stateBackdrop()}
 			<section class="cv-state-card cv-state-card--error" aria-labelledby="state-title" aria-busy={retrying}>
 				<span class="cv-state-icon">{@render icon('alert')}</span>
 				<h1 id="state-title" class="cv-state-title">Tiempo en {placeName}</h1>
