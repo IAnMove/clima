@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import '$lib/ui/cv-a.css';
+	import '$lib/ui/cv-b.css';
+	import { goto, invalidateAll } from '$app/navigation';
 	import { onDestroy, onMount } from 'svelte';
 	import WeatherFxLayer from '$lib/components/weather-fx-layer.svelte';
 	import type { WeatherRenderer } from '$lib/components/weather-fx/types';
@@ -24,8 +26,32 @@
 	type FlickrFeedResponse = {
 		items?: FlickrFeedItem[];
 	};
+	type ViewMode = 'photo' | 'minimal' | 'all-info';
+	type IconName =
+		| 'arrow-left'
+		| 'photo'
+		| 'city'
+		| 'list'
+		| 'image'
+		| 'droplet'
+		| 'umbrella'
+		| 'humidity'
+		| 'wind'
+		| 'pin'
+		| 'chevron-left'
+		| 'chevron-right'
+		| 'refresh'
+		| 'alert'
+		| 'search'
+		| 'shuffle'
+		| 'upload'
+		| 'undo'
+		| 'clock'
+		| 'calendar'
+		| 'home'
+		| 'external';
 
-	let mode = $state<'photo' | 'minimal' | 'all-info'>('photo');
+	let mode = $state<ViewMode>('photo');
 	let hourlyPage = $state(0);
 	let dailyPage = $state(0);
 	let forcedCondition = $state<WeatherCondition | null>(null);
@@ -47,6 +73,11 @@
 	let provinceMunicipalities = $state<Municipality[]>([]);
 	let loadingProvinceMunicipalities = $state(false);
 	let provinceMunicipalityError = $state<string | null>(null);
+	let prefersReducedMotion = $state(false);
+	let retrying = $state(false);
+	let imageMenuWrap = $state<HTMLDivElement | null>(null);
+	let imageMenuToggleEl = $state<HTMLButtonElement | null>(null);
+
 	const availableConditions: WeatherCondition[] = [
 		'clear',
 		'cloudy',
@@ -58,6 +89,11 @@
 	];
 	const conditionSet = new Set<WeatherCondition>(availableConditions);
 	const availableRenderers: WeatherRenderer[] = ['canvas2d', 'pixijs'];
+	const modeOptions: Array<{ value: ViewMode; label: string; icon: IconName }> = [
+		{ value: 'photo', label: 'Foto', icon: 'photo' },
+		{ value: 'minimal', label: 'Ilustración', icon: 'city' },
+		{ value: 'all-info', label: 'Detalle', icon: 'list' }
+	];
 
 	const payload = $derived((data.payload ?? {}) as GenericPayload);
 	const status = $derived(payload.status ?? 'error');
@@ -98,8 +134,14 @@
 	const currentPrecipitationProbability = $derived(
 		typeof report?.current?.precipitationProbabilityPercent === 'number' &&
 			Number.isFinite(report.current.precipitationProbabilityPercent)
-				? report.current.precipitationProbabilityPercent
-				: 0
+			? report.current.precipitationProbabilityPercent
+			: 0
+	);
+	const currentHumidity = $derived(
+		typeof report?.current?.humidityPercent === 'number' &&
+			Number.isFinite(report.current.humidityPercent)
+			? clampPercent(report.current.humidityPercent)
+			: null
 	);
 	const activePrecipitationProbability = $derived(
 		isDebugMode
@@ -109,6 +151,7 @@
 	const precipitationLevelLabel = $derived(
 		resolvePrecipitationLevelLabel(activeWeatherCondition, activePrecipitationProbability)
 	);
+	const fxActive = $derived(mode !== 'all-info' && (isDebugMode || !prefersReducedMotion));
 
 	const hourlyChunks = $derived(chunk(hourly, 12));
 	const dailyChunks = $derived(chunk(daily, 5));
@@ -124,6 +167,7 @@
 	);
 	const currentHourDecimal = $derived(activeClock.getHours() + activeClock.getMinutes() / 60);
 	const isDaytime = $derived(currentHourDecimal >= 6 && currentHourDecimal < 18);
+	const showNightIcon = $derived(visualsReady && !isDaytime);
 	const daylightStrength = $derived(resolveDaylightStrength(currentHourDecimal));
 	const celestialProgress = $derived(resolveCelestialProgress(currentHourDecimal, isDaytime));
 	const celestialXPercent = $derived(8 + 84 * celestialProgress);
@@ -140,6 +184,13 @@
 		visualsReady = true;
 		autoRenderer = detectPreferredRenderer();
 
+		const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+		const syncReducedMotion = () => {
+			prefersReducedMotion = reducedMotionQuery.matches;
+		};
+		syncReducedMotion();
+		reducedMotionQuery.addEventListener('change', syncReducedMotion);
+
 		const tickMs = isDebugMode ? 1_000 : 60_000;
 		const timer = window.setInterval(() => {
 			now = new Date();
@@ -147,6 +198,7 @@
 
 		return () => {
 			window.clearInterval(timer);
+			reducedMotionQuery.removeEventListener('change', syncReducedMotion);
 		};
 	});
 
@@ -236,9 +288,9 @@
 	function resolvePrecipitationLevelLabel(
 		condition: WeatherCondition,
 		precipitationProbabilityPercent: number
-	): 'baja' | 'media' | 'alta' | 'sin precipitacion' {
+	): 'baja' | 'media' | 'alta' | 'sin precipitación' {
 		if (condition !== 'rain' && condition !== 'snow' && condition !== 'storm') {
-			return 'sin precipitacion';
+			return 'sin precipitación';
 		}
 
 		if (precipitationProbabilityPercent < 30) {
@@ -248,6 +300,10 @@
 			return 'media';
 		}
 		return 'alta';
+	}
+
+	function capitalize(value: string): string {
+		return value ? value.charAt(0).toLocaleUpperCase('es-ES') + value.slice(1) : value;
 	}
 
 	function formatTemp(value: unknown): string {
@@ -459,6 +515,22 @@
 		}
 	}
 
+	function onWindowPointerDown(event: PointerEvent): void {
+		if (!imageMenuOpen || !imageMenuWrap) {
+			return;
+		}
+		if (event.target instanceof Node && !imageMenuWrap.contains(event.target)) {
+			imageMenuOpen = false;
+		}
+	}
+
+	function onWindowKeydown(event: KeyboardEvent): void {
+		if (event.key === 'Escape' && imageMenuOpen) {
+			imageMenuOpen = false;
+			imageMenuToggleEl?.focus();
+		}
+	}
+
 	async function applyRandomImage(): Promise<void> {
 		if (loadingRandomImage) {
 			return;
@@ -483,7 +555,7 @@
 			);
 
 			if (!candidates.length) {
-				imageMenuError = 'No encontre otra imagen de esta ciudad ahora';
+				imageMenuError = 'No encontré otra imagen de esta ciudad ahora mismo';
 				return;
 			}
 
@@ -717,1272 +789,795 @@
 		event.preventDefault();
 		void loadProvinceMunicipalities();
 	}
-</script>
 
-<main class="page">
+	async function retryLoad(): Promise<void> {
+		if (retrying) {
+			return;
+		}
+		retrying = true;
+		try {
+			await invalidateAll();
+		} finally {
+			retrying = false;
+		}
+	}
+
+	// --- rediseño v2 it1
+	let cvScrolled = $state(false);
+	let cvDisplayTemp = $state<number | null>(null);
+
+	function onCvScroll(): void {
+		cvScrolled = window.scrollY > 24;
+	}
+
+	const cvTempValue = $derived(
+		typeof report?.current?.temperatureC === 'number' && Number.isFinite(report.current.temperatureC)
+			? Math.round(report.current.temperatureC)
+			: null
+	);
+	const cvShownTemp = $derived(cvDisplayTemp ?? cvTempValue);
+
+	$effect(() => {
+		const target = cvTempValue;
+		if (!visualsReady || prefersReducedMotion || target === null) {
+			cvDisplayTemp = null;
+			return;
+		}
+		const start = performance.now();
+		const duration = 700;
+		let raf = 0;
+		const step = (t: number) => {
+			const p = Math.min(1, (t - start) / duration);
+			const eased = 1 - Math.pow(1 - p, 3);
+			cvDisplayTemp = Math.round(target * eased);
+			if (p < 1) {
+				raf = requestAnimationFrame(step);
+			} else {
+				cvDisplayTemp = null;
+			}
+		};
+		raf = requestAnimationFrame(step);
+		return () => cancelAnimationFrame(raf);
+	});
+
+	const cvHours = $derived(hourly.slice(0, 24));
+	const cvWeekRange = $derived.by(() => {
+		const mins = daily.map((d) => d.minTemperatureC).filter((v) => typeof v === 'number' && Number.isFinite(v));
+		const maxs = daily.map((d) => d.maxTemperatureC).filter((v) => typeof v === 'number' && Number.isFinite(v));
+		if (!mins.length || !maxs.length) return null;
+		const lo = Math.min(...mins);
+		const hi = Math.max(...maxs);
+		return { lo, hi: hi > lo ? hi : lo + 1 };
+	});
+
+	function cvRangeStyle(day: GenericPayload): string {
+		const range = cvWeekRange;
+		const lo = day.minTemperatureC;
+		const hi = day.maxTemperatureC;
+		if (!range || typeof lo !== 'number' || typeof hi !== 'number') return '--lo:0%;--hi:0%';
+		const span = range.hi - range.lo;
+		const loPct = clampUnit((lo - range.lo) / span) * 100;
+		const hiPct = clampUnit((hi - range.lo) / span) * 100;
+		return `--lo:${loPct.toFixed(1)}%;--hi:${Math.max(loPct, hiPct).toFixed(1)}%`;
+	}
+
+	function cvDayLabel(isoDate: unknown, index: number): string {
+		if (index === 0) return 'Hoy';
+		if (index === 1) return 'Mañana';
+		if (typeof isoDate !== 'string') return '--';
+		const parsed = new Date(isoDate);
+		if (Number.isNaN(parsed.getTime())) return isoDate;
+		return capitalize(parsed.toLocaleDateString('es-ES', { weekday: 'short' }).replace('.', ''));
+	}
+
+	function cvDayLong(isoDate: unknown): string {
+		if (typeof isoDate !== 'string') return '';
+		const parsed = new Date(isoDate);
+		if (Number.isNaN(parsed.getTime())) return isoDate;
+		return parsed.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' });
+	}
+
+	function cvHasPop(value: unknown): boolean {
+		return typeof value === 'number' && Number.isFinite(value) && value > 0;
+	}
+
+	const cvWindDeg = $derived(
+		typeof report?.current?.windDirectionDeg === 'number' && Number.isFinite(report.current.windDirectionDeg)
+			? report.current.windDirectionDeg
+			: null
+	);
+	const cvUpdated = $derived.by(() => {
+		const raw = report?.current?.isoTime ?? report?.updatedAt ?? report?.generatedAt ?? hourly[0]?.isoTime;
+		return typeof raw === 'string' ? formatTime(raw) : null;
+	});
+	const cvProvince = $derived(String(report?.location?.province ?? municipality?.province ?? 'España'));
+	const cvCode = $derived(String(report?.location?.code ?? municipality?.code ?? ''));
+	const cvModeIndex = $derived(Math.max(0, modeOptions.findIndex((o) => o.value === mode)));
+	const cvToday = $derived(daily[0] ?? null);
+
+	function onCvModesKeydown(event: KeyboardEvent): void {
+		const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'];
+		if (!keys.includes(event.key)) return;
+		event.preventDefault();
+		const len = modeOptions.length;
+		let next = cvModeIndex;
+		if (event.key === 'ArrowRight' || event.key === 'ArrowDown') next = (cvModeIndex + 1) % len;
+		else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') next = (cvModeIndex - 1 + len) % len;
+		else if (event.key === 'Home') next = 0;
+		else next = len - 1;
+		mode = modeOptions[next].value;
+		const group = event.currentTarget as HTMLElement | null;
+		requestAnimationFrame(() => group?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus());
+	}
+
+	// --- rediseño v2 it2
+	// --- rediseño v3
+	const CV_TZ = 'Europe/Madrid';
+	function cvHourInTz(d: Date): number {
+		try {
+			const parts = new Intl.DateTimeFormat('es-ES', { hour: 'numeric', minute: 'numeric', hourCycle: 'h23', timeZone: CV_TZ }).formatToParts(d);
+			const h = Number(parts.find((p) => p.type === 'hour')?.value ?? NaN);
+			const m = Number(parts.find((p) => p.type === 'minute')?.value ?? 0);
+			return Number.isFinite(h) ? h + m / 60 : d.getHours() + d.getMinutes() / 60;
+		} catch {
+			return d.getHours() + d.getMinutes() / 60;
+		}
+	}
+	function cvIsNightHour(h: number): boolean {
+		return h < 7 || h >= 21;
+	}
+	const cvLocalHour = $derived(cvHourInTz(activeClock));
+	const cvHeroNight = $derived(visualsReady && cvIsNightHour(cvLocalHour));
+	function cvIsNightIso(iso: unknown): boolean {
+		if (typeof iso !== 'string') return false;
+		const d = new Date(iso);
+		return Number.isNaN(d.getTime()) ? false : cvIsNightHour(cvHourInTz(d));
+	}
+	function cvFinite(v: unknown): v is number {
+		return typeof v === 'number' && Number.isFinite(v);
+	}
+	const cvHoursShown = $derived(cvHours.filter((h, i) => i === 0 || cvFinite(h.temperatureC)));
+	const cvNowTemp = $derived.by(() => {
+		if (cvShownTemp !== null) return cvShownTemp;
+		const t = cvHours[0]?.temperatureC;
+		return cvFinite(t) ? Math.round(t) : null;
+	});
+	const cvTodayMax = $derived.by(() => {
+		const f = cvToday?.maxTemperatureC;
+		if (cvFinite(f) && cvTempValue !== null) return Math.max(f, cvTempValue);
+		return cvFinite(f) ? f : cvTempValue;
+	});
+	const cvNoPrecip = $derived(precipitationLevelLabel === 'sin precipitación');
+	const cvIntensityLabel = $derived(cvNoPrecip ? 'Ninguna' : capitalize(precipitationLevelLabel));
+	const cvBeaufort = $derived.by(() => {
+		const limits = [1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118];
+		const idx = limits.findIndex((l) => currentWindKmh < l);
+		return idx === -1 ? 12 : idx;
+	});
+
+	// --- rediseño v2 it3
+	// --- rediseño v4
+	const cvBaseCond = $derived.by<WeatherCondition>(() => {
+		const cur = normalizeWeatherCondition(report?.current?.condition);
+		if (cur !== 'unknown') return cur;
+		const h = normalizeWeatherCondition(hourly[0]?.condition);
+		if (h !== 'unknown') return h;
+		return normalizeWeatherCondition(daily[0]?.condition);
+	});
+	const cvCond = $derived<WeatherCondition>(isDebugMode && forcedCondition ? forcedCondition : cvBaseCond);
+	const cvCondText = $derived(
+		String(report?.current?.description ?? hourly[0]?.description ?? daily[0]?.description ?? 'Sin descripción')
+	);
+	const cvPopNow = $derived(
+		cvFinite(hourly[0]?.precipitationProbabilityPercent)
+			? clampPercent(hourly[0].precipitationProbabilityPercent)
+			: activePrecipitationProbability
+	);
+	const cvDry = $derived(cvNoPrecip && activePrecipitationProbability === 0);
+	const CV_COL = 64;
+	const cvSpark = $derived.by(() => {
+		const temps = cvHoursShown.map((h, i) =>
+			i === 0 && cvTempValue !== null ? cvTempValue : cvFinite(h.temperatureC) ? h.temperatureC : null
+		);
+		const valid = temps.filter((t): t is number => t !== null);
+		if (valid.length < 2) return null;
+		const lo = Math.min(...valid);
+		const hi = Math.max(...valid);
+		const span = hi - lo || 1;
+		const pts = temps
+			.map((t, i) => (t === null ? null : `${i * CV_COL + CV_COL / 2},${(34 - ((t - lo) / span) * 28).toFixed(1)}`))
+			.filter(Boolean) as string[];
+		const width = temps.length * CV_COL;
+		return {
+			width,
+			line: `M${pts.join(' L')}`,
+			area: `M${pts[0].split(',')[0]},40 L${pts.join(' L')} L${pts[pts.length - 1].split(',')[0]},40 Z`
+		};
+	});
+	const cvWindFrom = $derived.by(() => {
+		if (cvWindDeg === null) return null;
+		const names = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+		return names[Math.round((((cvWindDeg % 360) + 360) % 360) / 45) % 8];
+	});
+</script>
+<svelte:window onpointerdown={onWindowPointerDown} onkeydown={onWindowKeydown} onscroll={onCvScroll} />
+
+{#snippet icon(name: IconName)}
+	<svg class="cv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		{#if name === 'arrow-left'}
+			<path d="M19 12H5M11 18l-6-6 6-6" />
+		{:else if name === 'photo'}
+			<rect x="3" y="5" width="18" height="14" rx="2.5" /><circle cx="9" cy="10" r="1.6" /><path d="M21 16l-5-5-8 8" />
+		{:else if name === 'city'}
+			<path d="M3 21h18M5 21V10l4-2v13M9 21V5l6 3v13M15 21v-9l4 2v7" />
+		{:else if name === 'list'}
+			<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
+		{:else if name === 'image'}
+			<rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" />
+		{:else if name === 'droplet'}
+			<path d="M12 3.2s6 6.4 6 10.8a6 6 0 0 1-12 0c0-4.4 6-10.8 6-10.8z" />
+		{:else if name === 'umbrella'}
+			<path d="M3 12a9 9 0 0 1 18 0H3z" /><path d="M12 12v6a2 2 0 0 1-4 0" />
+		{:else if name === 'humidity'}
+			<path d="M12 3.2s6 6.4 6 10.8a6 6 0 0 1-12 0c0-4.4 6-10.8 6-10.8z" /><path d="M8.5 14.5c1.2.8 2.3.8 3.5 0s2.3-.8 3.5 0" />
+		{:else if name === 'wind'}
+			<path d="M3 8h10.5a2.5 2.5 0 1 0-2.5-2.5M3 12h15.5a2.5 2.5 0 1 1-2.5 2.5M3 16h7" />
+		{:else if name === 'pin'}
+			<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z" /><circle cx="12" cy="9.5" r="2.5" />
+		{:else if name === 'chevron-left'}
+			<path d="M15 18l-6-6 6-6" />
+		{:else if name === 'chevron-right'}
+			<path d="M9 18l6-6-6-6" />
+		{:else if name === 'refresh'}
+			<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />
+		{:else if name === 'alert'}
+			<circle cx="12" cy="12" r="9" /><path d="M12 7.5v5.5M12 16.5h.01" />
+		{:else if name === 'search'}
+			<circle cx="11" cy="11" r="6.5" /><path d="M20 20l-4.2-4.2" />
+		{:else if name === 'shuffle'}
+			<path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5" />
+		{:else if name === 'upload'}
+			<path d="M12 15V4M7 9l5-5 5 5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
+		{:else if name === 'undo'}
+			<path d="M9 14 4 9l5-5M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+		{:else if name === 'clock'}
+			<circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" />
+		{:else if name === 'calendar'}
+			<rect x="3.5" y="5" width="17" height="15" rx="2.5" /><path d="M3.5 10h17M8 3v4M16 3v4" />
+		{:else if name === 'home'}
+			<path d="M3 11l9-7 9 7M5 10v10h14V10" />
+		{:else if name === 'external'}
+			<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+		{/if}
+	</svg>
+{/snippet}
+
+{#snippet weatherIcon(condition: WeatherCondition, night: boolean, size: string)}
+	<svg class={`cv-icon cv-wi cv-wi--${condition} ${size}`} viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+		{#if condition === 'clear' && night}
+			<path d="M36 29.5A13 13 0 1 1 18.5 12a10.5 10.5 0 0 0 17.5 17.5z" />
+			<path d="M35 9v4M33 11h4M40 18v2M39 19h2" />
+		{:else if condition === 'clear'}
+			<circle cx="24" cy="24" r="8" />
+			<path d="M24 6v4M24 38v4M6 24h4M38 24h4M11.3 11.3l2.8 2.8M33.9 33.9l2.8 2.8M11.3 36.7l2.8-2.8M33.9 14.1l2.8-2.8" />
+		{:else if condition === 'cloudy'}
+			<path d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" />
+		{:else if condition === 'rain'}
+			<g transform="translate(0 -6)"><path d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" /></g>
+			<path class="cv-wi-rain" d="M18 35l-2 6M26 35l-2 6M34 35l-2 6" />
+		{:else if condition === 'snow'}
+			<g transform="translate(0 -6)"><path d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" /></g>
+			<circle cx="17" cy="38" r="1.8" /><circle cx="25" cy="42" r="1.8" /><circle cx="33" cy="38" r="1.8" />
+		{:else if condition === 'storm'}
+			<g transform="translate(0 -6)"><path d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" /></g>
+			<path class="cv-wi-bolt" d="M26 30l-5 8h6l-4 7" />
+		{:else if condition === 'fog'}
+			<g transform="translate(0 -7)"><path d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" /></g>
+			<path d="M9 35h30M13 41h22" />
+		{:else}
+			<circle cx="16" cy="16" r="5.5" />
+			<path d="M16 5v2.5M5 16h2.5M8.2 8.2l1.8 1.8M23.8 8.2 22 10" />
+			<g transform="translate(4 2)"><path d="M15 36h19a8 8 0 0 0 1.2-15.9A11 11 0 0 0 14 22.2 7 7 0 0 0 15 36z" /></g>
+		{/if}
+	</svg>
+{/snippet}
+
+{#snippet skyline()}
+	<div class={`cv-illu ${isDaytime ? 'cv-illu--day' : 'cv-illu--night'}`}>
+		<div class={`cv-celestial ${isDaytime ? 'cv-celestial--sun' : 'cv-celestial--moon'}`} style={celestialStyle}></div>
+		<svg class="cv-illu-svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMax slice">
+			<ellipse class="cv-illu-haze" cx="800" cy="695" rx="760" ry="142"></ellipse>
+			<path class="cv-illu-back" d="M0 675 L48 675 L48 612 L98 612 L98 675 L156 675 L156 544 L190 544 L206 518 L222 544 L262 544 L262 675 L324 675 L324 585 L372 585 L372 675 L430 675 L430 520 L472 520 L472 675 L548 675 L548 560 L588 560 L606 534 L624 560 L672 560 L672 675 L740 675 L740 598 L798 598 L798 675 L872 675 L872 540 L918 540 L918 675 L994 675 L994 575 L1042 575 L1042 675 L1116 675 L1116 548 L1154 548 L1174 508 L1194 548 L1246 548 L1246 675 L1320 675 L1320 594 L1378 594 L1378 675 L1450 675 L1450 534 L1496 534 L1496 675 L1600 675 L1600 900 L0 900 Z"></path>
+			<path class="cv-illu-mid" d="M0 760 L70 760 L70 646 L124 646 L124 760 L186 760 L186 606 L254 606 L254 760 L332 760 L332 636 L384 636 L384 760 L468 760 L468 590 L522 590 L522 760 L602 760 L602 624 L660 624 L660 760 L742 760 L742 566 L798 566 L798 760 L876 760 L876 622 L936 622 L936 760 L1012 760 L1012 586 L1070 586 L1070 760 L1148 760 L1148 630 L1212 630 L1212 760 L1286 760 L1286 596 L1348 596 L1348 760 L1424 760 L1424 642 L1488 642 L1488 760 L1600 760 L1600 900 L0 900 Z"></path>
+			<path class="cv-illu-front" d="M0 900 L0 835 L84 835 L84 728 L146 728 L146 835 L230 835 L230 690 L300 690 L300 835 L384 835 L384 702 L440 702 L470 668 L500 702 L560 702 L560 835 L644 835 L644 648 L724 648 L724 835 L806 835 L806 712 L868 712 L868 835 L956 835 L956 666 L1032 666 L1032 835 L1118 835 L1118 718 L1186 718 L1186 835 L1274 835 L1274 680 L1352 680 L1352 835 L1442 835 L1442 736 L1512 736 L1512 835 L1600 835 L1600 900 Z"></path>
+			<g class="cv-illu-windows">
+				<rect x="102" y="776" width="9" height="12"></rect><rect x="248" y="744" width="9" height="12"></rect>
+				<rect x="408" y="756" width="9" height="12"></rect><rect x="676" y="726" width="9" height="12"></rect>
+				<rect x="982" y="718" width="9" height="12"></rect><rect x="1306" y="734" width="9" height="12"></rect>
+				<rect x="494" y="660" width="8" height="10"></rect><rect x="766" y="646" width="8" height="10"></rect>
+				<rect x="1038" y="664" width="8" height="10"></rect><rect x="1318" y="662" width="8" height="10"></rect>
+			</g>
+			<path class="cv-illu-road" d="M0 815 C220 802 456 832 688 818 C986 798 1276 832 1600 816 L1600 900 L0 900 Z"></path>
+		</svg>
+	</div>
+{/snippet}
+
+{#snippet stateBackdrop()}
+	<div class="cv-state-backdrop" aria-hidden="true" style={visualsReady ? sceneToneStyle : undefined}>
+		{@render skyline()}
+		<div class="cv-scrim cv-scrim--radial"></div>
+	</div>
+{/snippet}
+
+{#snippet stateBack()}
+	<a class="cv-back cv-back--state" href="/">{@render icon('arrow-left')}<span>Volver al inicio</span></a>
+{/snippet}
+
+{#snippet candidateButton(item: Municipality, showPin: boolean, sub: string)}
+	<button type="button" class="cv-candidate" onclick={() => openCandidate(item)}>
+		{#if showPin}<span class="cv-candidate-icon">{@render icon('pin')}</span>{/if}
+		<span class="cv-candidate-text">
+			<strong>{item.name}</strong>
+			<span>{sub}</span>
+		</span>
+		<span class="cv-candidate-chevron">{@render icon('chevron-right')}</span>
+	</button>
+{/snippet}
+
+{#snippet creditBody()}
+	Imagen: {activeImage?.attributionText}
+	{#if activeImage?.attributionUrl}
+		{' · '}<a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente<span class="cv-sr"> (se abre en una pestaña nueva)</span></a>
+	{/if}
+{/snippet}
+
+{#snippet meterTicks()}
+	<span class="cv-meter-ticks" aria-hidden="true"><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i></span>
+{/snippet}
+
+<a class="cv-skip" href="#cv-forecast">Saltar a la previsión</a>
+
+<main id="contenido" class={`cv-page cv-page--${status}`} tabindex="-1">
 	{#if status === 'ok' && report}
 		<div
-			class={`scene mode-${mode} condition-${activeWeatherCondition} ${compactMode ? 'compact' : ''}`}
+			class={`cv-layout cv-mode--${mode} cv-cond--${cvCond} ${cvHeroNight ? 'cv-is-night' : 'cv-is-day'} ${prefersReducedMotion ? 'cv-reduced' : ''}`}
 			style={visualsReady ? sceneToneStyle : undefined}
 		>
-			{#if mode === 'photo' && activeImage?.url}
-				<div class="photo" style={`background-image:url('${toBackgroundImageCss(activeImage.url)}')`}></div>
-			{/if}
-
-			<div class="gradient"></div>
-			{#if mode === 'minimal'}
-				<div class={`minimal-city-layer ${isDaytime ? 'day' : 'night'}`}>
-					<div
-						class={`celestial-body ${isDaytime ? 'sun' : 'moon'}`}
-						style={celestialStyle}
-						aria-hidden="true"
-					></div>
-					<svg class="minimal-city-svg" viewBox="0 0 1600 900" preserveAspectRatio="none" aria-hidden="true">
-						<defs>
-							<linearGradient id="city-backdrop" x1="0" y1="0" x2="0" y2="1">
-								<stop offset="0%" stop-color="rgba(152, 214, 233, 0.2)" />
-								<stop offset="100%" stop-color="rgba(15, 34, 48, 0.02)" />
-							</linearGradient>
-							<linearGradient id="skyline-back-fill" x1="0" y1="0" x2="0" y2="1">
-								<stop offset="0%" stop-color="rgba(52, 96, 123, 0.56)" />
-								<stop offset="100%" stop-color="rgba(27, 59, 80, 0.72)" />
-							</linearGradient>
-							<linearGradient id="skyline-mid-fill" x1="0" y1="0" x2="0" y2="1">
-								<stop offset="0%" stop-color="rgba(33, 74, 99, 0.72)" />
-								<stop offset="100%" stop-color="rgba(16, 46, 66, 0.84)" />
-							</linearGradient>
-							<linearGradient id="skyline-front-fill" x1="0" y1="0" x2="0" y2="1">
-								<stop offset="0%" stop-color="rgba(17, 48, 68, 0.94)" />
-								<stop offset="100%" stop-color="rgba(8, 28, 42, 0.98)" />
-							</linearGradient>
-							<linearGradient id="city-ground-fill" x1="0" y1="0" x2="0" y2="1">
-								<stop offset="0%" stop-color="rgba(10, 37, 53, 0.84)" />
-								<stop offset="100%" stop-color="rgba(4, 21, 32, 1)" />
-							</linearGradient>
-						</defs>
-						<rect x="0" y="0" width="1600" height="900" fill="url(#city-backdrop)" />
-						<ellipse class="city-haze" cx="800" cy="695" rx="760" ry="142"></ellipse>
-
-						<g class="skyline skyline-back">
-							<path
-								class="skyline-fill-back"
-								d="M0 675 L48 675 L48 612 L98 612 L98 675 L156 675 L156 544 L190 544 L206 518 L222 544 L262 544 L262 675 L324 675 L324 585 L372 585 L372 675 L430 675 L430 520 L472 520 L472 675 L548 675 L548 560 L588 560 L606 534 L624 560 L672 560 L672 675 L740 675 L740 598 L798 598 L798 675 L872 675 L872 540 L918 540 L918 675 L994 675 L994 575 L1042 575 L1042 675 L1116 675 L1116 548 L1154 548 L1174 508 L1194 548 L1246 548 L1246 675 L1320 675 L1320 594 L1378 594 L1378 675 L1450 675 L1450 534 L1496 534 L1496 675 L1600 675 L1600 900 L0 900 Z"
-							></path>
-							<path
-								class="skyline-ridge skyline-ridge-back"
-								d="M0 675 L48 675 L48 612 L98 612 L98 675 L156 675 L156 544 L190 544 L206 518 L222 544 L262 544 L262 675 L324 675 L324 585 L372 585 L372 675 L430 675 L430 520 L472 520 L472 675 L548 675 L548 560 L588 560 L606 534 L624 560 L672 560 L672 675 L740 675 L740 598 L798 598 L798 675 L872 675 L872 540 L918 540 L918 675 L994 675 L994 575 L1042 575 L1042 675 L1116 675 L1116 548 L1154 548 L1174 508 L1194 548 L1246 548 L1246 675 L1320 675 L1320 594 L1378 594 L1378 675 L1450 675 L1450 534 L1496 534 L1496 675 L1600 675"
-							></path>
-						</g>
-
-						<g class="skyline skyline-mid">
-							<path
-								class="skyline-fill-mid"
-								d="M0 760 L70 760 L70 646 L124 646 L124 760 L186 760 L186 606 L254 606 L254 760 L332 760 L332 636 L384 636 L384 760 L468 760 L468 590 L522 590 L522 760 L602 760 L602 624 L660 624 L660 760 L742 760 L742 566 L798 566 L798 760 L876 760 L876 622 L936 622 L936 760 L1012 760 L1012 586 L1070 586 L1070 760 L1148 760 L1148 630 L1212 630 L1212 760 L1286 760 L1286 596 L1348 596 L1348 760 L1424 760 L1424 642 L1488 642 L1488 760 L1600 760 L1600 900 L0 900 Z"
-							></path>
-							<path
-								class="skyline-ridge skyline-ridge-mid"
-								d="M0 760 L70 760 L70 646 L124 646 L124 760 L186 760 L186 606 L254 606 L254 760 L332 760 L332 636 L384 636 L384 760 L468 760 L468 590 L522 590 L522 760 L602 760 L602 624 L660 624 L660 760 L742 760 L742 566 L798 566 L798 760 L876 760 L876 622 L936 622 L936 760 L1012 760 L1012 586 L1070 586 L1070 760 L1148 760 L1148 630 L1212 630 L1212 760 L1286 760 L1286 596 L1348 596 L1348 760 L1424 760 L1424 642 L1488 642 L1488 760 L1600 760"
-							></path>
-							<rect class="skyline-facade skyline-facade-mid" x="220" y="628" width="28" height="132"></rect>
-							<rect class="skyline-facade skyline-facade-mid" x="492" y="610" width="22" height="150"></rect>
-							<rect class="skyline-facade skyline-facade-mid" x="764" y="588" width="24" height="172"></rect>
-							<rect class="skyline-facade skyline-facade-mid" x="1038" y="602" width="26" height="158"></rect>
-							<rect class="skyline-facade skyline-facade-mid" x="1316" y="618" width="24" height="142"></rect>
-						</g>
-
-						<g class="skyline skyline-front">
-							<path
-								class="skyline-fill-front"
-								d="M0 900 L0 835 L84 835 L84 728 L146 728 L146 835 L230 835 L230 690 L300 690 L300 835 L384 835 L384 702 L440 702 L470 668 L500 702 L560 702 L560 835 L644 835 L644 648 L724 648 L724 835 L806 835 L806 712 L868 712 L868 835 L956 835 L956 666 L1032 666 L1032 835 L1118 835 L1118 718 L1186 718 L1186 835 L1274 835 L1274 680 L1352 680 L1352 835 L1442 835 L1442 736 L1512 736 L1512 835 L1600 835 L1600 900 Z"
-							></path>
-							<path
-								class="skyline-ridge skyline-ridge-front"
-								d="M0 835 L84 835 L84 728 L146 728 L146 835 L230 835 L230 690 L300 690 L300 835 L384 835 L384 702 L440 702 L470 668 L500 702 L560 702 L560 835 L644 835 L644 648 L724 648 L724 835 L806 835 L806 712 L868 712 L868 835 L956 835 L956 666 L1032 666 L1032 835 L1118 835 L1118 718 L1186 718 L1186 835 L1274 835 L1274 680 L1352 680 L1352 835 L1442 835 L1442 736 L1512 736 L1512 835 L1600 835"
-							></path>
-							<path
-								class="skyline-facade skyline-facade-front"
-								d="M938 835 L938 642 L968 642 L968 614 L982 590 L996 614 L996 642 L1026 642 L1026 835 Z"
-							></path>
-							<path
-								class="skyline-facade skyline-facade-front"
-								d="M658 835 L658 662 L678 662 L678 632 L694 612 L710 632 L710 662 L730 662 L730 835 Z"
-							></path>
-						</g>
-
-						<path class="skyline-waterline" d="M0 760 C230 742 420 782 650 766 C885 748 1060 784 1290 770 C1410 762 1514 762 1600 772 L1600 820 L0 820 Z"></path>
-						<rect class="skyline-ground" x="0" y="790" width="1600" height="110"></rect>
-						<path class="skyline-road" d="M0 815 C220 802 456 832 688 818 C986 798 1276 832 1600 816 L1600 900 L0 900 Z"></path>
-
-						<g class="skyline-windows skyline-windows-back">
-							<rect class="skyline-window" x="176" y="574" width="8" height="10"></rect>
-							<rect class="skyline-window" x="342" y="612" width="7" height="9"></rect>
-							<rect class="skyline-window" x="438" y="552" width="8" height="10"></rect>
-							<rect class="skyline-window" x="582" y="596" width="7" height="9"></rect>
-							<rect class="skyline-window" x="748" y="620" width="8" height="10"></rect>
-							<rect class="skyline-window" x="896" y="572" width="8" height="10"></rect>
-							<rect class="skyline-window" x="1030" y="608" width="7" height="9"></rect>
-							<rect class="skyline-window" x="1162" y="566" width="8" height="10"></rect>
-							<rect class="skyline-window" x="1332" y="626" width="7" height="9"></rect>
-							<rect class="skyline-window" x="1468" y="566" width="8" height="10"></rect>
-						</g>
-
-						<g class="skyline-windows skyline-windows-mid">
-							<rect class="skyline-window" x="92" y="696" width="8" height="10"></rect>
-							<rect class="skyline-window" x="220" y="672" width="8" height="10"></rect>
-							<rect class="skyline-window" x="342" y="686" width="8" height="10"></rect>
-							<rect class="skyline-window" x="494" y="660" width="8" height="10"></rect>
-							<rect class="skyline-window" x="618" y="688" width="8" height="10"></rect>
-							<rect class="skyline-window" x="766" y="646" width="8" height="10"></rect>
-							<rect class="skyline-window" x="892" y="684" width="8" height="10"></rect>
-							<rect class="skyline-window" x="1038" y="664" width="8" height="10"></rect>
-							<rect class="skyline-window" x="1168" y="692" width="8" height="10"></rect>
-							<rect class="skyline-window" x="1318" y="662" width="8" height="10"></rect>
-							<rect class="skyline-window" x="1454" y="698" width="8" height="10"></rect>
-						</g>
-
-						<g class="skyline-windows skyline-windows-front">
-							<rect class="skyline-window" x="102" y="776" width="9" height="12"></rect>
-							<rect class="skyline-window" x="248" y="744" width="9" height="12"></rect>
-							<rect class="skyline-window" x="408" y="756" width="9" height="12"></rect>
-							<rect class="skyline-window" x="518" y="742" width="9" height="12"></rect>
-							<rect class="skyline-window" x="676" y="726" width="9" height="12"></rect>
-							<rect class="skyline-window" x="832" y="764" width="9" height="12"></rect>
-							<rect class="skyline-window" x="982" y="718" width="9" height="12"></rect>
-							<rect class="skyline-window" x="1142" y="770" width="9" height="12"></rect>
-							<rect class="skyline-window" x="1306" y="734" width="9" height="12"></rect>
-							<rect class="skyline-window" x="1462" y="776" width="9" height="12"></rect>
-						</g>
-					</svg>
+			<div class="cv-stage">
+				<div class="cv-stage-media" aria-hidden="true">
+					{#if mode !== 'minimal' && activeImage?.url}
+						<div class="cv-photo" style={`background-image:url('${toBackgroundImageCss(activeImage.url)}')`}></div>
+					{:else}
+						{@render skyline()}
+					{/if}
 				</div>
-			{/if}
-			<div class="fx-host">
-				<WeatherFxLayer
-					condition={activeWeatherCondition}
-					windKmh={currentWindKmh}
-					precipitationProbabilityPercent={activePrecipitationProbability}
-					renderer={activeRenderer}
-					active={mode !== 'all-info'}
-					onRendererResolved={(resolved) => (resolvedRenderer = resolved)}
-				/>
-			</div>
 
-			<div class={`content ${compactMode ? 'content-compact' : ''}`}>
-				<header class="hero">
-					<div>
-						<p class="chip">Fuente: {payload.provider?.toUpperCase() ?? 'API'}</p>
-						<h1>Tiempo en {placeName}</h1>
-						<p class="subtitle">
-							{report.location?.province ?? municipality?.province ?? 'Espa\u00f1a'} &middot; c&oacute;digo
-							{report.location?.code ?? municipality?.code}
+				<div class="cv-fx">
+					<WeatherFxLayer
+						condition={cvCond}
+						windKmh={currentWindKmh}
+						precipitationProbabilityPercent={activePrecipitationProbability}
+						renderer={activeRenderer}
+						active={fxActive}
+						onRendererResolved={(resolved) => (resolvedRenderer = resolved)}
+					/>
+				</div>
+				<div class="cv-scrim cv-scrim--radial" aria-hidden="true"></div>
+
+				<a class="cv-back cv-back--stage" href="/">
+					{@render icon('arrow-left')}
+					<span>Clima Visual</span>
+				</a>
+
+				<section class="cv-hero" aria-labelledby="cv-title">
+					<p class="cv-eyebrow cv-reveal" style="--i:0">
+						<span class="cv-eyebrow-src">{String(payload.provider ?? 'AEMET').toUpperCase()}</span>
+						{#if cvUpdated}
+							<span class="cv-eyebrow-dot" aria-hidden="true">·</span>
+							<span class="cv-eyebrow-time">Actualizado a las {cvUpdated}</span>
+						{/if}
+					</p>
+					<p
+						class="cv-temp cv-reveal"
+						style="--i:1"
+						aria-label={cvTempValue !== null ? `${cvTempValue} grados` : 'Temperatura no disponible'}
+					>
+						<span class="cv-temp-num" aria-hidden="true">{cvShownTemp ?? '--'}</span><span class="cv-temp-deg" aria-hidden="true"></span>
+					</p>
+					<h1 id="cv-title" class="cv-city cv-reveal" style="--i:2">
+						<span class="cv-city-pre">Tiempo en </span><span class="cv-city-name">{placeName}</span>
+					</h1>
+					<p class="cv-place cv-reveal" style="--i:3">
+						{@render icon('pin')}
+						<span>{cvProvince}</span>
+					</p>
+					<div class="cv-hero-row cv-glass cv-reveal" style="--i:4">
+						<p class="cv-cond">
+							{@render weatherIcon(cvCond, cvHeroNight, 'cv-icon--md')}
+							<span>{cvCondText}</span>
 						</p>
-					</div>
-
-					<div class="hero-controls">
-						<div class="mode-switch" role="group" aria-label="Modo visual">
-							<button class:active={mode === 'photo'} type="button" onclick={() => (mode = 'photo')}>
-								Foto
-							</button>
-							<button
-								class:active={mode === 'minimal'}
-								type="button"
-								onclick={() => (mode = 'minimal')}
-							>
-								Minimal
-							</button>
-							<button
-								class:active={mode === 'all-info'}
-								type="button"
-								onclick={() => (mode = 'all-info')}
-							>
-								All info
-							</button>
-						</div>
-
-						{#if mode === 'photo'}
-							<div class="image-menu-wrap">
-								<button class="image-menu-toggle" type="button" onclick={toggleImageMenu}>
-									Cambiar imagen
-								</button>
-								{#if imageMenuOpen}
-									<div class="image-menu">
-										<button
-											type="button"
-											class="image-menu-action"
-											onclick={() => void applyRandomImage()}
-											disabled={loadingRandomImage}
-										>
-											{loadingRandomImage ? 'Buscando...' : 'Aleatoria de esta ciudad'}
-										</button>
-										<div class="image-menu-file">
-											<label for="local-image-input">Imagen local (sin subir al server)</label>
-											<input
-												id="local-image-input"
-												type="file"
-												accept="image/*"
-												onchange={onCustomImageFileChange}
-											/>
-										</div>
-										<button type="button" class="image-menu-reset" onclick={restoreServerImage}>
-											Volver a original
-										</button>
-										{#if imageMenuError}
-											<p class="image-menu-error">{imageMenuError}</p>
-										{/if}
-									</div>
-								{/if}
-							</div>
+						{#if cvToday}
+							<span class="cv-hero-sep" aria-hidden="true"></span>
+							<p class="cv-minmax">
+								<span class="cv-minmax-hi"><span class="cv-minmax-arrow cv-warm" aria-hidden="true">↑</span><span class="cv-sr">Máxima </span>{formatTemp(cvTodayMax)}</span>
+								<span class="cv-minmax-lo"><span class="cv-minmax-arrow cv-cold" aria-hidden="true">↓</span><span class="cv-sr">Mínima </span>{formatTemp(cvToday.minTemperatureC)}</span>
+							</p>
 						{/if}
-
-						{#if isDebugMode}
-							<section class="debug-panel">
-								<p class="debug-title">Debug clima</p>
-								<p class="debug-label">Renderer</p>
-								<div class="renderer-buttons">
-									{#each availableRenderers as rendererOption}
-										<button
-											type="button"
-											class:selected={rendererOption === activeRenderer}
-											onclick={() => (selectedRenderer = rendererOption)}
-										>
-											{rendererOption}
-										</button>
-									{/each}
-								</div>
-								<p class="debug-info">
-									Activo: <strong>{resolvedRenderer}</strong>
-									{#if isRendererFallback}
-										<span>(fallback por incompatibilidad WebGL/Pixi)</span>
-									{/if}
-								</p>
-								<p class="debug-label">Condici&oacute;n</p>
-								<div class="debug-buttons">
-									{#each availableConditions as condition}
-										<button
-											type="button"
-											class:selected={condition === activeWeatherCondition}
-											onclick={() => (forcedCondition = condition)}
-										>
-											{condition}
-										</button>
-									{/each}
-								</div>
-								<div class="debug-precipitation">
-									<div class="debug-precipitation-head">
-										<p class="debug-label">% precipitaci&oacute;n</p>
-										<strong>{activePrecipitationProbability}%</strong>
-									</div>
-									<input
-										class="debug-precipitation-range"
-										type="range"
-										min="0"
-										max="100"
-										step="1"
-										value={activePrecipitationProbability}
-										oninput={onDebugPrecipitationInput}
-									/>
-									<input
-										class="debug-precipitation-number"
-										type="number"
-										min="0"
-										max="100"
-										step="1"
-										value={activePrecipitationProbability}
-										oninput={onDebugPrecipitationInput}
-									/>
-								</div>
-								<div class="debug-time">
-									<div class="debug-time-head">
-										<p class="debug-label">Reloj minimal</p>
-										<strong>{visualsReady ? debugClockLabel : '--:--'}</strong>
-									</div>
-									<p class="debug-time-info">
-										Real: {visualsReady ? formatClockLabel(now) : '--:--'} &middot; offset: {debugOffsetLabel}
-									</p>
-									<input
-										class="debug-time-number"
-										type="number"
-										min="-10080"
-										max="10080"
-										step="1"
-										value={clampedDebugOffsetMinutes}
-										oninput={onDebugTimeOffsetInput}
-										aria-label="Offset en minutos para sol y luna"
-									/>
-									<div class="debug-time-buttons">
-										<button type="button" onclick={() => shiftDebugTimeOffset(-60)}>-60m</button>
-										<button type="button" onclick={() => shiftDebugTimeOffset(-15)}>-15m</button>
-										<button type="button" onclick={() => shiftDebugTimeOffset(15)}>+15m</button>
-										<button type="button" onclick={() => shiftDebugTimeOffset(60)}>+60m</button>
-										<button type="button" onclick={() => (debugTimeOffsetMinutes = 0)}>Ahora</button>
-									</div>
-								</div>
-							</section>
-						{/if}
-					</div>
-				</header>
-
-				<section class="current">
-					<div class="big-temp">{formatTemp(report.current?.temperatureC)}</div>
-					<div class="meta">
-						<p class="summary">{report.current?.description ?? 'Sin descripci\u00f3n'}</p>
-						<p>Precipitaci&oacute;n: {formatPercent(activePrecipitationProbability)}</p>
-						<p>Intensidad precipitaci&oacute;n: {precipitationLevelLabel}</p>
-						<p>Humedad: {formatPercent(report.current?.humidityPercent)}</p>
-						<p>Viento: {formatWind(report.current?.windKmh)}</p>
 					</div>
 				</section>
 
-				{#if mode === 'all-info'}
-					<section class="panel">
-					<div class="panel-header">
-						<h2>Por horas</h2>
-						<div class="pager">
-							<button type="button" onclick={() => (hourlyPage = Math.max(0, hourlyPage - 1))}>
-								Anterior
-							</button>
-							<span>{hourlyChunks.length ? hourlyPage + 1 : 0}/{hourlyChunks.length}</span>
+				{#if mode === 'photo' && activeImage?.attributionText}
+					<p class="cv-credit cv-credit--stage" title={activeImage.attributionText}>{@render creditBody()}</p>
+				{/if}
+			</div>
+
+			<div id="cv-forecast" class="cv-panel cv-sheet cv-panel-reveal" tabindex="-1">
+				<span class="cv-sheet-handle" aria-hidden="true"></span>
+				<header class={`cv-panel-head ${cvScrolled ? 'cv-panel-head--solid' : ''}`}>
+					<div
+						class="cv-modes"
+						role="radiogroup"
+						aria-label="Modo visual"
+						style={`--cv-mode-index:${cvModeIndex};--cv-mode-count:${modeOptions.length}`}
+						tabindex="-1"
+						onkeydown={onCvModesKeydown}
+					>
+						<span class="cv-mode-thumb" aria-hidden="true"></span>
+						{#each modeOptions as option (option.value)}
 							<button
 								type="button"
-								onclick={() => (hourlyPage = Math.min(hourlyChunks.length - 1, hourlyPage + 1))}
+								class={`cv-mode ${mode === option.value ? 'cv-mode--active' : ''}`}
+								role="radio"
+								aria-checked={mode === option.value}
+								aria-label={option.label}
+								title={option.label}
+								tabindex={mode === option.value ? 0 : -1}
+								onclick={() => (mode = option.value)}
 							>
-								Siguiente
+								{@render icon(option.icon)}
+								<span class="cv-mode-label" aria-hidden="true">{option.label}</span>
 							</button>
-						</div>
+						{/each}
 					</div>
 
-					{#if visibleHourly.length > 0}
-						<div class="cards">
-							{#each visibleHourly as hour}
-								<article class="card">
-									<p class="time">{formatTime(hour.isoTime)}</p>
-									<p>{formatTemp(hour.temperatureC)}</p>
-									<p class="soft">{hour.description ?? 'Sin dato'}</p>
-									<p class="soft">{formatPercent(hour.precipitationProbabilityPercent)} lluvia</p>
-								</article>
+					{#if mode === 'photo'}
+						<div class="cv-imgmenu-wrap" bind:this={imageMenuWrap}>
+							<button
+								class="cv-imgbtn"
+								type="button"
+								onclick={toggleImageMenu}
+								aria-expanded={imageMenuOpen}
+								aria-controls="cv-image-menu"
+								aria-label="Cambiar imagen"
+								title="Cambiar imagen"
+								bind:this={imageMenuToggleEl}
+							>
+								{@render icon('image')}
+							</button>
+							{#if imageMenuOpen}
+								<div id="cv-image-menu" class="cv-imgmenu" role="group" aria-label="Opciones de imagen de fondo">
+									<button type="button" class="cv-imgmenu-item" onclick={() => void applyRandomImage()} disabled={loadingRandomImage} aria-busy={loadingRandomImage}>
+										{#if loadingRandomImage}
+											<span class="cv-spinner" aria-hidden="true"></span>
+											<span class="cv-imgmenu-title">Buscando…</span>
+										{:else}
+											{@render icon('shuffle')}
+											<span class="cv-imgmenu-title">Aleatoria de esta ciudad</span>
+										{/if}
+									</button>
+									<label class="cv-imgmenu-item cv-imgmenu-file">
+										{@render icon('upload')}
+										<span class="cv-imgmenu-text">
+											<span class="cv-imgmenu-title">Imagen de tu dispositivo</span>
+											<span class="cv-imgmenu-note">No se sube al servidor</span>
+										</span>
+										<input class="cv-sr" type="file" accept="image/*" onchange={onCustomImageFileChange} />
+									</label>
+									<button type="button" class="cv-imgmenu-item" onclick={restoreServerImage} disabled={!customImage}>
+										{@render icon('undo')}
+										<span class="cv-imgmenu-title">Volver a la original</span>
+									</button>
+									{#if imageMenuError}
+										<p class="cv-imgmenu-error" role="alert">{@render icon('alert')} {imageMenuError}</p>
+									{/if}
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</header>
+
+				{#if isDebugMode}
+					<section class="cv-debug" aria-label="Panel de depuración">
+						<p class="cv-sectitle">Debug clima</p>
+						<p class="cv-debug-label">Renderer</p>
+						<div class="cv-debug-buttons">
+							{#each availableRenderers as rendererOption}
+								<button type="button" class="cv-chip" aria-pressed={rendererOption === activeRenderer} onclick={() => (selectedRenderer = rendererOption)}>{rendererOption}</button>
 							{/each}
 						</div>
-					{:else}
-						<p class="empty">No hay datos horarios disponibles.</p>
-					{/if}
-					</section>
-
-					<section class="panel">
-					<div class="panel-header">
-						<h2>Pr&oacute;ximos d&iacute;as</h2>
-						<div class="pager">
-							<button type="button" onclick={() => (dailyPage = Math.max(0, dailyPage - 1))}>
-								Anterior
-							</button>
-							<span>{dailyChunks.length ? dailyPage + 1 : 0}/{dailyChunks.length}</span>
-							<button type="button" onclick={() => (dailyPage = Math.min(dailyChunks.length - 1, dailyPage + 1))}>
-								Siguiente
-							</button>
-						</div>
-					</div>
-
-					{#if visibleDaily.length > 0}
-						<div class="cards">
-							{#each visibleDaily as day}
-								<article class="card">
-									<p class="time">{formatDate(day.isoDate)}</p>
-									<p>{formatTemp(day.maxTemperatureC)} / {formatTemp(day.minTemperatureC)}</p>
-									<p class="soft">{day.description ?? 'Sin dato'}</p>
-									<p class="soft">{formatPercent(day.precipitationProbabilityPercent)} lluvia</p>
-								</article>
+						<p class="cv-debug-info">
+							Activo: <strong>{resolvedRenderer}</strong>
+							{#if isRendererFallback}<span>(alternativa por incompatibilidad WebGL/Pixi)</span>{/if}
+						</p>
+						<p class="cv-debug-label">Condición</p>
+						<div class="cv-debug-buttons">
+							{#each availableConditions as condition}
+								<button type="button" class="cv-chip" aria-pressed={condition === cvCond} onclick={() => (forcedCondition = condition)}>{condition}</button>
 							{/each}
 						</div>
-					{:else}
-						<p class="empty">No hay datos diarios disponibles.</p>
-					{/if}
+						<div class="cv-debug-row">
+							<p class="cv-debug-label">% precipitación <strong>{activePrecipitationProbability}%</strong></p>
+							<input class="cv-debug-range" type="range" min="0" max="100" step="1" value={activePrecipitationProbability} oninput={onDebugPrecipitationInput} aria-label="Porcentaje de precipitación" />
+							<input class="cv-debug-number" type="number" min="0" max="100" step="1" value={activePrecipitationProbability} oninput={onDebugPrecipitationInput} aria-label="Porcentaje de precipitación (número)" />
+						</div>
+						<div class="cv-debug-row">
+							<p class="cv-debug-label">Reloj ilustración <strong>{visualsReady ? debugClockLabel : '--:--'}</strong></p>
+							<p class="cv-debug-info">Real: {visualsReady ? formatClockLabel(now) : '--:--'} · desfase: {debugOffsetLabel}</p>
+							<input class="cv-debug-number" type="number" min="-10080" max="10080" step="1" value={clampedDebugOffsetMinutes} oninput={onDebugTimeOffsetInput} aria-label="Desfase en minutos para sol y luna" />
+							<div class="cv-debug-buttons">
+								<button type="button" class="cv-chip" onclick={() => shiftDebugTimeOffset(-60)}>-60m</button>
+								<button type="button" class="cv-chip" onclick={() => shiftDebugTimeOffset(-15)}>-15m</button>
+								<button type="button" class="cv-chip" onclick={() => shiftDebugTimeOffset(15)}>+15m</button>
+								<button type="button" class="cv-chip" onclick={() => shiftDebugTimeOffset(60)}>+60m</button>
+								<button type="button" class="cv-chip" onclick={() => (debugTimeOffsetMinutes = 0)}>Ahora</button>
+							</div>
+						</div>
 					</section>
 				{/if}
 
-				{#if mode === 'photo' && activeImage?.attributionText}
-					<p class="attribution">
-						Imagen: {activeImage.attributionText}
-						{#if activeImage.attributionUrl}
-							&middot;
-							<a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente</a>
+				<section class="cv-band cv-band--hours cv-reveal" style="--i:6" aria-labelledby="cv-hours-title">
+					<h2 id="cv-hours-title" class="cv-sectitle">{@render icon('clock')} Próximas horas</h2>
+					{#if cvHoursShown.length > 0}
+						<div class="cv-hours-scroller" tabindex="0" role="region" aria-label="Previsión por horas, desplazable">
+							{#if cvSpark}
+								<svg class="cv-spark" width={cvSpark.width} height="40" viewBox={`0 0 ${cvSpark.width} 40`} preserveAspectRatio="none" aria-hidden="true">
+									<path class="cv-spark-area" d={cvSpark.area} />
+									<path class="cv-spark-line" d={cvSpark.line} fill="none" />
+								</svg>
+							{/if}
+							<ol class="cv-hours">
+								{#each cvHoursShown as hour, index}
+									{#if index === 0}
+										<li class="cv-hour cv-hour--now">
+											<span class="cv-hour-time">Ahora</span>
+											{@render weatherIcon(cvCond, cvHeroNight, 'cv-icon--lg')}
+											<span class="cv-sr">{cvCondText}</span>
+											<span class="cv-hour-pop">
+												{#if cvPopNow > 0}{cvPopNow}%<span class="cv-sr"> de probabilidad de lluvia</span>{/if}
+											</span>
+											<span class="cv-hour-temp">{cvNowTemp !== null ? `${cvNowTemp}°` : formatTemp(hour.temperatureC)}</span>
+										</li>
+									{:else}
+										<li class="cv-hour">
+											<span class="cv-hour-time">{formatTime(hour.isoTime)}</span>
+											{@render weatherIcon(normalizeWeatherCondition(hour.condition), visualsReady && cvIsNightIso(hour.isoTime), 'cv-icon--lg')}
+											<span class="cv-sr">{hour.description ?? ''}</span>
+											<span class="cv-hour-pop">
+												{#if cvHasPop(hour.precipitationProbabilityPercent)}{formatPercent(hour.precipitationProbabilityPercent)}<span class="cv-sr"> de probabilidad de lluvia</span>{/if}
+											</span>
+											<span class="cv-hour-temp">{formatTemp(hour.temperatureC)}</span>
+										</li>
+									{/if}
+								{/each}
+							</ol>
+						</div>
+					{:else}
+						<p class="cv-empty">No hay datos horarios disponibles.</p>
+					{/if}
+				</section>
+
+				<section class="cv-band cv-band--days cv-reveal" style="--i:7" aria-labelledby="cv-days-title">
+					<h2 id="cv-days-title" class="cv-sectitle">{@render icon('calendar')} Próximos días</h2>
+					{#if daily.length > 0}
+						<ol class="cv-days">
+							{#each daily as day, index}
+								<li class={`cv-day ${index === 0 ? 'cv-day--today' : ''}`}>
+									<span class="cv-day-name">
+										<span aria-hidden="true">{cvDayLabel(day.isoDate, index)}</span>
+										<span class="cv-sr">{index < 2 ? cvDayLabel(day.isoDate, index) + ', ' : ''}{cvDayLong(day.isoDate)}</span>
+									</span>
+									<span class="cv-day-icon">
+										{@render weatherIcon(normalizeWeatherCondition(day.condition), false, 'cv-icon--md')}
+										<span class="cv-sr">{day.description ?? ''}</span>
+									</span>
+									<span class="cv-day-pop">
+										{#if cvHasPop(day.precipitationProbabilityPercent)}
+											{formatPercent(day.precipitationProbabilityPercent)}<span class="cv-sr"> de probabilidad de lluvia</span>
+										{/if}
+									</span>
+									<span class="cv-day-min"><span class="cv-sr">Mínima </span>{formatTemp(day.minTemperatureC)}</span>
+									<span class="cv-range" aria-hidden="true"><span class="cv-range-fill" style={cvRangeStyle(day)}></span></span>
+									<span class="cv-day-max"><span class="cv-sr">Máxima </span>{formatTemp(index === 0 ? cvTodayMax : day.maxTemperatureC)}</span>
+								</li>
+							{/each}
+						</ol>
+					{:else}
+						<p class="cv-empty">No hay datos diarios disponibles.</p>
+					{/if}
+				</section>
+
+				<section class="cv-band cv-band--metrics cv-reveal" style="--i:8" aria-labelledby="cv-metrics-title">
+					<h2 id="cv-metrics-title" class="cv-sectitle">{@render icon('list')} Detalles</h2>
+					<dl class={`cv-metrics ${mode === 'all-info' ? 'cv-metrics--full' : ''}`}>
+						{#if cvDry}
+							<div class="cv-metric cv-metric--dry">
+								<dt>{@render icon('umbrella')} Lluvia</dt>
+								<dd><span class="cv-metric-value cv-metric-value--text">Sin lluvia</span></dd>
+							</div>
+						{:else}
+							<div class="cv-metric">
+								<dt>{@render icon('droplet')} <span aria-hidden="true">Lluvia</span><span class="cv-sr">Probabilidad de precipitación</span></dt>
+								<dd>
+									<span class="cv-metric-value">{activePrecipitationProbability}<small>%</small></span>
+									<span class="cv-meter cv-meter--rain" aria-hidden="true">{@render meterTicks()}<span style={`width:${activePrecipitationProbability}%`}></span></span>
+								</dd>
+							</div>
+							<div class="cv-metric">
+								<dt>{@render icon('umbrella')} Intensidad</dt>
+								<dd>
+									<span class="cv-metric-value cv-metric-value--text">{cvIntensityLabel}</span>
+									<span class="cv-meter cv-meter--steps" aria-hidden="true">{@render meterTicks()}<span style={`width:${cvNoPrecip ? 0 : precipitationLevelLabel === 'baja' ? 33 : precipitationLevelLabel === 'media' ? 66 : 100}%`}></span></span>
+								</dd>
+							</div>
 						{/if}
-					</p>
-				{/if}
+						<div class="cv-metric">
+							<dt>{@render icon('humidity')} Humedad</dt>
+							<dd>
+								<span class="cv-metric-value">{currentHumidity ?? '--'}<small>%</small></span>
+								<span class="cv-meter cv-meter--humidity" aria-hidden="true">{@render meterTicks()}<span style={`width:${currentHumidity ?? 0}%`}></span></span>
+							</dd>
+						</div>
+						<div class="cv-metric cv-metric--wind">
+							<dt>{@render icon('wind')} Viento</dt>
+							<dd class="cv-wind">
+								<span class={`cv-compass ${cvWindDeg === null ? 'cv-compass--muted' : ''}`} aria-hidden="true">
+									<span class="cv-compass-n">N</span><span class="cv-compass-e">E</span><span class="cv-compass-s">S</span><span class="cv-compass-o">O</span>
+									<span class="cv-compass-needle" style={`transform:rotate(${(cvWindDeg ?? 0) + 180}deg)`}>
+										<svg class="cv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M7 10l5-5 5 5" /></svg>
+									</span>
+								</span>
+								<span class="cv-wind-text">
+									<span class="cv-metric-value">{Number.isFinite(report.current?.windKmh) ? Math.round(report.current.windKmh) : '--'}<small> km/h</small></span>
+									<span class="cv-wind-dir" aria-hidden="true">{cvWindFrom ? `del ${cvWindFrom}` : 'Sin dirección'} · F{cvBeaufort}</span>
+								</span>
+								<span class="cv-sr">Fuerza {cvBeaufort} en la escala Beaufort{#if cvWindFrom}, viento del {cvWindFrom}{/if}</span>
+							</dd>
+						</div>
+						{#if mode === 'all-info'}
+							<div class="cv-metric">
+								<dt>{@render icon('clock')} Hora local</dt>
+								<dd><span class="cv-metric-value">{visualsReady ? formatClockLabel(activeClock) : '--:--'}</span></dd>
+							</div>
+							<div class="cv-metric">
+								<dt>{@render icon('calendar')} Hoy</dt>
+								<dd><span class="cv-metric-value cv-metric-value--text">{cvToday ? formatDate(cvToday.isoDate) : '--'}</span></dd>
+							</div>
+							<div class="cv-metric">
+								<dt>{@render icon('pin')} Código INE</dt>
+								<dd><span class="cv-metric-value">{cvCode || '--'}</span></dd>
+							</div>
+							<div class="cv-metric">
+								<dt>{@render icon('external')} Fuente</dt>
+								<dd><span class="cv-metric-value cv-metric-value--text">{String(payload.provider ?? 'AEMET').toUpperCase()}</span></dd>
+							</div>
+						{/if}
+					</dl>
+				</section>
+
+				<footer class="cv-panel-foot">
+					{#if mode === 'photo' && activeImage?.attributionText}
+						<p class="cv-credit cv-credit--foot">
+							{@render icon('photo')}
+							<span>{@render creditBody()}</span>
+						</p>
+					{/if}
+					<p class="cv-credit">Datos oficiales de AEMET</p>
+				</footer>
 			</div>
 		</div>
 	{:else if status === 'ambiguous'}
-		<section class="state">
-			<h1>Hay varios municipios llamados {placeName}</h1>
-			<p>{payload.message}</p>
-			<div class="list">
-				{#each (payload.candidates ?? []) as candidate}
-					<button type="button" class="candidate" onclick={() => openCandidate(candidate)}>
-						{candidate.name}{candidate.province ? `, ${candidate.province}` : ''} ({candidate.code})
-					</button>
-				{/each}
-			</div>
-		</section>
+		<div class="cv-state">
+			{@render stateBackdrop()}
+			<section class="cv-state-card" aria-labelledby="state-title">
+				{@render stateBack()}
+				<span class="cv-state-icon">{@render icon('pin')}</span>
+				<h1 id="state-title" class="cv-state-title">Hay varios municipios llamados {placeName}</h1>
+				{#if payload.message}<p class="cv-state-lead">{payload.message}</p>{/if}
+				<ul class="cv-list">
+					{#each payload.candidates ?? [] as candidate}
+						<li>{@render candidateButton(candidate, true, `${candidate.province ? candidate.province : 'Provincia desconocida'} · código ${candidate.code}`)}</li>
+					{/each}
+				</ul>
+			</section>
+		</div>
 	{:else if status === 'not_found'}
-		<section class="state">
-			<h1>No encontramos el municipio {placeName}</h1>
-			<p>{payload.message}</p>
+		<div class="cv-state">
+			{@render stateBackdrop()}
+			<section class="cv-state-card" aria-labelledby="state-title">
+				{@render stateBack()}
+				<span class="cv-state-icon">{@render icon('search')}</span>
+				<h1 id="state-title" class="cv-state-title">No encontramos el municipio {placeName}</h1>
+				{#if payload.message}<p class="cv-state-lead">{payload.message}</p>{/if}
 
-			{#if (payload.suggestions ?? []).length > 0}
-				<h2>Sugerencias por nombre</h2>
-				<div class="list">
-					{#each payload.suggestions as suggestion}
-						<button type="button" class="candidate" onclick={() => openCandidate(suggestion)}>
-							{suggestion.name}{suggestion.province ? `, ${suggestion.province}` : ''} ({suggestion.code})
-						</button>
-					{/each}
-				</div>
-			{/if}
+				{#if (payload.suggestions ?? []).length > 0}
+					<h2 class="cv-sectitle">Sugerencias por nombre</h2>
+					<ul class="cv-list">
+						{#each payload.suggestions as suggestion}
+							<li>{@render candidateButton(suggestion, true, `${suggestion.province ? suggestion.province : 'Provincia desconocida'} · código ${suggestion.code}`)}</li>
+						{/each}
+					</ul>
+				{/if}
 
-			{#if (payload.provinceSuggestions ?? []).length > 0}
-				<h2>Provincias relacionadas</h2>
-				<div class="province-list">
-					{#each payload.provinceSuggestions as provinceSuggestion}
-						<article class="province-card">
-							<p class="province-title">
-								{provinceSuggestion.province} &middot; {provinceSuggestion.totalMunicipalities} municipios
-							</p>
-							<div class="mini-list">
-								{#each provinceSuggestion.municipalities as municipalityItem}
-									<button
-										type="button"
-										class="mini-candidate"
-										onclick={() => openCandidate(municipalityItem)}
-									>
-										{municipalityItem.name}
-									</button>
-								{/each}
-							</div>
-						</article>
-					{/each}
-				</div>
-			{/if}
+				{#if (payload.provinceSuggestions ?? []).length > 0}
+					<h2 class="cv-sectitle">Provincias relacionadas</h2>
+					<div class="cv-provinces">
+						{#each payload.provinceSuggestions as provinceSuggestion}
+							<article class="cv-province">
+								<h3 class="cv-province-title">
+									{provinceSuggestion.province}
+									<span>{provinceSuggestion.totalMunicipalities} municipios</span>
+								</h3>
+								<ul class="cv-chips">
+									{#each provinceSuggestion.municipalities as municipalityItem}
+										<li><button type="button" class="cv-chip" onclick={() => openCandidate(municipalityItem)}>{municipalityItem.name}</button></li>
+									{/each}
+								</ul>
+							</article>
+						{/each}
+					</div>
+				{/if}
 
-			<h2>Listar municipios por provincia</h2>
-			<form class="province-form" onsubmit={searchProvince}>
-				<input bind:value={selectedProvince} placeholder="Asturias" />
-				<button type="submit" disabled={loadingProvinceMunicipalities}>
-					{loadingProvinceMunicipalities ? 'Cargando...' : 'Listar'}
-				</button>
-			</form>
+				<h2 class="cv-sectitle">Listar municipios por provincia</h2>
+				<form class="cv-search cv-search--inline" onsubmit={searchProvince}>
+					<label for="province-search" class="cv-sr">Provincia</label>
+					<span class="cv-search-icon">{@render icon('search')}</span>
+					<input id="province-search" class="cv-search-input" bind:value={selectedProvince} placeholder="Asturias" autocomplete="off" autocapitalize="words" />
+					<button type="submit" class="cv-cta" disabled={loadingProvinceMunicipalities} aria-busy={loadingProvinceMunicipalities}>
+						{#if loadingProvinceMunicipalities}
+							<span class="cv-spinner" aria-hidden="true"></span> Cargando…
+						{:else}
+							{@render icon('list')} Listar
+						{/if}
+					</button>
+				</form>
 
-			{#if provinceMunicipalityError}
-				<p class="error">{provinceMunicipalityError}</p>
-			{/if}
+				{#if provinceMunicipalityError}
+					<p class="cv-error" role="alert">{@render icon('alert')} {provinceMunicipalityError}</p>
+				{/if}
+				<p class="cv-sr" aria-live="polite">
+					{provinceMunicipalities.length > 0 ? `${provinceMunicipalities.length} municipios encontrados` : ''}
+				</p>
 
-			{#if provinceMunicipalities.length > 0}
-				<div class="list">
-					{#each provinceMunicipalities as municipalityItem}
-						<button
-							type="button"
-							class="candidate"
-							onclick={() => openCandidate(municipalityItem)}
-						>
-							{municipalityItem.name} ({municipalityItem.code})
-						</button>
-					{/each}
-				</div>
-			{/if}
-		</section>
+				{#if provinceMunicipalities.length > 0}
+					<ul class="cv-list cv-list--compact">
+						{#each provinceMunicipalities as municipalityItem}
+							<li>{@render candidateButton(municipalityItem, false, `código ${municipalityItem.code}`)}</li>
+						{/each}
+					</ul>
+				{/if}
+			</section>
+		</div>
 	{:else}
-		<section class="state">
-			<h1>Tiempo en {placeName}</h1>
-			<p>{payload.message ?? 'No se pudo obtener la informaci\u00f3n meteorol\u00f3gica.'}</p>
-		</section>
+		<div class="cv-state">
+			{@render stateBackdrop()}
+			<section class="cv-state-card cv-state-card--error" aria-labelledby="state-title" aria-busy={retrying}>
+				<span class="cv-state-icon">{@render icon('alert')}</span>
+				<h1 id="state-title" class="cv-state-title">Tiempo en {placeName}</h1>
+				<p class="cv-state-lead" role="alert">
+					{payload.message ?? 'No se pudo obtener la información meteorológica.'}
+				</p>
+				<p class="cv-sr" aria-live="polite">{retrying ? 'Cargando de nuevo los datos…' : ''}</p>
+				<div class="cv-state-actions">
+					<button type="button" class="cv-cta" onclick={() => void retryLoad()} disabled={retrying} aria-busy={retrying}>
+						{#if retrying}
+							<span class="cv-spinner" aria-hidden="true"></span> Reintentando…
+						{:else}
+							{@render icon('refresh')} Reintentar
+						{/if}
+					</button>
+					<a class="cv-cta cv-cta--ghost" href="/">{@render icon('home')} Volver al inicio</a>
+				</div>
+			</section>
+		</div>
 	{/if}
 </main>
-
-<style>
-	.page {
-		min-height: 100svh;
-		padding: 0;
-	}
-
-	.scene {
-		position: relative;
-		width: 100%;
-		min-height: 100svh;
-		margin: 0;
-		border-radius: 0;
-		overflow: hidden;
-		--daylight: 0;
-		--night: 1;
-		--scene-bg-top: #10384a;
-		--scene-bg-bottom: #0d2734;
-		--sky-sun-glow: rgba(255, 188, 106, 0.28);
-		--sky-cyan-glow: rgba(63, 161, 192, 0.12);
-		--overlay-top: rgba(8, 25, 35, 0.25);
-		--overlay-mid: rgba(7, 22, 32, 0.78);
-		--overlay-bottom: rgba(5, 18, 27, 0.98);
-		--chip-color: #ffd88b;
-		--control-bg: rgba(8, 29, 41, 0.72);
-		--control-bg-strong: rgba(8, 33, 45, 0.68);
-		--control-border: rgba(170, 214, 224, 0.3);
-		--control-text: #e3f3f8;
-		--panel-heading: #9cd7e4;
-		--city-haze: rgba(173, 226, 240, 0.21);
-		--city-ridge-back: rgba(181, 219, 231, 0.18);
-		--city-ridge-mid: rgba(167, 212, 226, 0.22);
-		--city-ridge-front: rgba(193, 233, 241, 0.16);
-		--city-facade: rgba(10, 38, 56, 0.56);
-		--city-facade-front: rgba(7, 26, 39, 0.86);
-		--city-waterline: rgba(73, 155, 180, 0.1);
-		--city-road: rgba(4, 19, 29, 0.74);
-		--city-window: rgba(255, 226, 154, 0.84);
-		background: linear-gradient(180deg, var(--scene-bg-top), var(--scene-bg-bottom));
-		box-shadow: none;
-		transition: background 900ms linear;
-	}
-
-	.photo,
-	.gradient,
-	.minimal-city-layer,
-	.fx-host {
-		position: absolute;
-		inset: 0;
-	}
-
-	.fx-host {
-		pointer-events: none;
-		z-index: 3;
-	}
-
-	.photo {
-		z-index: 0;
-		background-size: cover;
-		background-position: center;
-		background-repeat: no-repeat;
-		filter:
-			saturate(calc(0.92 + var(--daylight) * 0.28))
-			contrast(calc(0.95 + var(--daylight) * 0.12))
-			brightness(calc(0.72 + var(--daylight) * 0.34));
-		transition: filter 900ms linear;
-	}
-
-	.gradient {
-		z-index: 1;
-		background:
-			radial-gradient(circle at 20% 0%, var(--sky-sun-glow), transparent 42%),
-			radial-gradient(circle at 90% 110%, var(--sky-cyan-glow), transparent 38%),
-			linear-gradient(
-				180deg,
-				var(--overlay-top) 0%,
-				var(--overlay-mid) 56%,
-				var(--overlay-bottom) 100%
-			);
-		transition: background 900ms linear, opacity 900ms linear;
-	}
-
-	.minimal-city-layer {
-		z-index: 2;
-		pointer-events: none;
-		filter:
-			brightness(calc(0.72 + var(--daylight) * 0.46))
-			saturate(calc(0.72 + var(--daylight) * 0.4));
-		transition: filter 900ms linear;
-	}
-
-	.minimal-city-svg {
-		position: absolute;
-		inset: 0;
-		width: 100%;
-		height: 100%;
-	}
-
-	.celestial-body {
-		position: absolute;
-		width: clamp(34px, 4vw, 62px);
-		aspect-ratio: 1 / 1;
-		transform: translate(-50%, -50%);
-		border-radius: 999px;
-	}
-
-	.celestial-body.sun {
-		background: radial-gradient(circle at 35% 30%, #fffbe5 0%, #ffd478 45%, #f59d32 100%);
-		box-shadow:
-			0 0 22px rgba(255, 208, 128, 0.8),
-			0 0 65px rgba(255, 184, 102, 0.42);
-	}
-
-	.celestial-body.moon {
-		background: radial-gradient(circle at 35% 28%, #fefefe 0%, #dbe6f2 50%, #aabed0 100%);
-		box-shadow:
-			0 0 20px rgba(201, 220, 238, 0.66),
-			0 0 58px rgba(157, 191, 221, 0.32);
-	}
-
-	.celestial-body.moon::after {
-		content: '';
-		position: absolute;
-		inset: 10% 0 0 28%;
-		background: rgba(8, 28, 40, 0.6);
-		border-radius: 999px;
-	}
-
-	.skyline {
-		vector-effect: non-scaling-stroke;
-	}
-
-	.city-haze {
-		fill: var(--city-haze);
-		filter: blur(16px);
-	}
-
-	.skyline-fill-back {
-		fill: url(#skyline-back-fill);
-	}
-
-	.skyline-fill-mid {
-		fill: url(#skyline-mid-fill);
-	}
-
-	.skyline-fill-front {
-		fill: url(#skyline-front-fill);
-	}
-
-	.skyline-ridge {
-		fill: none;
-		stroke-linecap: round;
-		stroke-linejoin: round;
-		vector-effect: non-scaling-stroke;
-	}
-
-	.skyline-ridge-back {
-		stroke: var(--city-ridge-back);
-		stroke-width: 1.6px;
-	}
-
-	.skyline-ridge-mid {
-		stroke: var(--city-ridge-mid);
-		stroke-width: 1.8px;
-	}
-
-	.skyline-ridge-front {
-		stroke: var(--city-ridge-front);
-		stroke-width: 2px;
-	}
-
-	.skyline-facade {
-		fill: var(--city-facade);
-	}
-
-	.skyline-facade-mid {
-		opacity: 0.5;
-	}
-
-	.skyline-facade-front {
-		fill: var(--city-facade-front);
-	}
-
-	.skyline-ground {
-		fill: url(#city-ground-fill);
-	}
-
-	.skyline-waterline {
-		fill: var(--city-waterline);
-		filter: blur(1px);
-	}
-
-	.skyline-road {
-		fill: var(--city-road);
-	}
-
-	.skyline-windows-back .skyline-window {
-		opacity: calc(0.12 + var(--night) * 0.34);
-	}
-
-	.skyline-windows-mid .skyline-window {
-		opacity: calc(0.18 + var(--night) * 0.42);
-	}
-
-	.skyline-windows-front .skyline-window {
-		opacity: calc(0.24 + var(--night) * 0.54);
-	}
-
-	.skyline-window {
-		fill: var(--city-window);
-	}
-
-	.mode-minimal .photo {
-		display: none;
-	}
-
-	.mode-minimal .gradient {
-		opacity: 1;
-	}
-
-	.mode-all-info .photo {
-		display: none;
-	}
-
-	.mode-all-info .gradient {
-		opacity: 0.9;
-	}
-
-	.mode-all-info .fx-host {
-		opacity: 0;
-		visibility: hidden;
-	}
-
-	.content {
-		position: relative;
-		z-index: 4;
-		padding: clamp(1rem, 2.5vw, 1.5rem);
-		color: var(--text-strong);
-		display: grid;
-		gap: 1rem;
-		width: min(1220px, 100%);
-	}
-
-	.scene.compact {
-		min-height: 100svh;
-	}
-
-	.content-compact {
-		max-width: 760px;
-	}
-
-	.content-compact .current {
-		background: var(--surface);
-		padding: 1.15rem;
-	}
-
-	.content-compact .big-temp {
-		font-size: clamp(2.8rem, 8vw, 4.8rem);
-	}
-
-	.content-compact .meta {
-		gap: 0.28rem;
-	}
-
-	.hero {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.9rem;
-		justify-content: space-between;
-		align-items: flex-start;
-	}
-
-	.hero-controls {
-		display: grid;
-		gap: 0.6rem;
-		justify-items: end;
-	}
-
-	.chip {
-		margin: 0 0 0.35rem;
-		display: inline-block;
-		font-size: 0.74rem;
-		font-weight: 700;
-		letter-spacing: 0.08em;
-		text-transform: uppercase;
-		color: var(--chip-color);
-	}
-
-	h1 {
-		margin: 0;
-		font-size: clamp(1.6rem, 4vw, 2.5rem);
-		line-height: 1.05;
-	}
-
-	.subtitle {
-		margin: 0.25rem 0 0;
-		color: var(--text-soft);
-	}
-
-	.mode-switch {
-		display: flex;
-		gap: 0.45rem;
-		padding: 0.28rem;
-		border-radius: 999px;
-		background: var(--control-bg);
-		border: 1px solid var(--control-border);
-	}
-
-	.mode-switch button {
-		border: 0;
-		background: transparent;
-		color: var(--text-soft);
-		padding: 0.42rem 0.75rem;
-		border-radius: 999px;
-		cursor: pointer;
-	}
-
-	.mode-switch button.active {
-		background: linear-gradient(110deg, var(--accent), #ffe099);
-		color: #2f2810;
-		font-weight: 700;
-	}
-
-	.image-menu-wrap {
-		position: relative;
-	}
-
-	.image-menu-toggle {
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 999px;
-		padding: 0.28rem 0.62rem;
-		font-size: 0.76rem;
-		cursor: pointer;
-	}
-
-	.image-menu {
-		position: absolute;
-		top: calc(100% + 0.35rem);
-		right: 0;
-		width: min(300px, 90vw);
-		background: var(--surface-strong);
-		border: 1px solid var(--control-border);
-		border-radius: 12px;
-		padding: 0.5rem;
-		display: grid;
-		gap: 0.45rem;
-		z-index: 3;
-	}
-
-	.image-menu-action,
-	.image-menu-reset {
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 9px;
-		padding: 0.42rem 0.56rem;
-		font-size: 0.78rem;
-		cursor: pointer;
-		text-align: left;
-	}
-
-	.image-menu-action:disabled {
-		opacity: 0.68;
-		cursor: progress;
-	}
-
-	.image-menu-file {
-		display: grid;
-		gap: 0.4rem;
-	}
-
-	.image-menu-file label {
-		font-size: 0.74rem;
-		color: var(--text-soft);
-	}
-
-	.image-menu-file input {
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 8px;
-		padding: 0.3rem 0.42rem;
-		font-size: 0.75rem;
-		min-width: 0;
-	}
-
-	.image-menu-error {
-		margin: 0;
-		color: #ffd4c7;
-		font-size: 0.75rem;
-	}
-
-	.debug-panel {
-		background: var(--surface-strong);
-		border: 1px solid var(--control-border);
-		border-radius: 14px;
-		padding: 0.5rem;
-		min-width: 260px;
-	}
-
-	.debug-title {
-		margin: 0 0 0.35rem;
-		font-size: 0.78rem;
-		font-weight: 700;
-		color: var(--panel-heading);
-		text-transform: uppercase;
-		letter-spacing: 0.06em;
-	}
-
-	.debug-label {
-		margin: 0 0 0.25rem;
-		font-size: 0.72rem;
-		letter-spacing: 0.05em;
-		color: var(--text-soft);
-		text-transform: uppercase;
-	}
-
-	.debug-info {
-		margin: 0 0 0.5rem;
-		font-size: 0.76rem;
-		color: var(--text-soft);
-	}
-
-	.debug-info strong {
-		color: var(--text-strong);
-	}
-
-	.debug-info span {
-		color: #f7c17c;
-	}
-
-	.renderer-buttons {
-		display: flex;
-		gap: 0.35rem;
-		margin-bottom: 0.45rem;
-	}
-
-	.debug-buttons {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
-	}
-
-	.debug-precipitation {
-		margin-top: 0.55rem;
-		display: grid;
-		gap: 0.35rem;
-	}
-
-	.debug-precipitation-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-	}
-
-	.debug-precipitation-head .debug-label {
-		margin: 0;
-	}
-
-	.debug-precipitation-head strong {
-		color: var(--text-strong);
-		font-size: 0.82rem;
-	}
-
-	.debug-precipitation-range {
-		width: 100%;
-		accent-color: var(--accent-2);
-	}
-
-	.debug-precipitation-number {
-		width: 84px;
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 8px;
-		padding: 0.28rem 0.45rem;
-		font-size: 0.8rem;
-	}
-
-	.debug-time {
-		margin-top: 0.55rem;
-		display: grid;
-		gap: 0.35rem;
-	}
-
-	.debug-time-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem;
-	}
-
-	.debug-time-head .debug-label {
-		margin: 0;
-	}
-
-	.debug-time-head strong {
-		color: var(--text-strong);
-		font-size: 0.82rem;
-	}
-
-	.debug-time-info {
-		margin: 0;
-		font-size: 0.74rem;
-		color: var(--text-soft);
-	}
-
-	.debug-time-number {
-		width: 100%;
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		border-radius: 8px;
-		padding: 0.28rem 0.45rem;
-		font-size: 0.8rem;
-	}
-
-	.debug-time-buttons {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.35rem;
-	}
-
-	.renderer-buttons button,
-	.debug-buttons button,
-	.debug-time-buttons button {
-		border: 1px solid var(--control-border);
-		background: var(--control-bg-strong);
-		color: var(--control-text);
-		padding: 0.28rem 0.6rem;
-		border-radius: 999px;
-		font-size: 0.78rem;
-		text-transform: capitalize;
-		cursor: pointer;
-	}
-
-	.renderer-buttons button.selected,
-	.debug-buttons button.selected {
-		background: linear-gradient(110deg, #7de6ef, #f9d789);
-		border-color: transparent;
-		color: #163840;
-		font-weight: 700;
-	}
-
-	.current {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 1rem;
-		padding: 1rem;
-		border-radius: 16px;
-		background: var(--surface);
-		backdrop-filter: blur(3px);
-	}
-
-	.big-temp {
-		font-size: clamp(2.2rem, 6vw, 4rem);
-		font-weight: 700;
-		line-height: 1;
-	}
-
-	.meta {
-		display: grid;
-		gap: 0.2rem;
-		align-content: center;
-	}
-
-	.meta p {
-		margin: 0;
-		color: var(--text-soft);
-	}
-
-	.summary {
-		color: var(--text-strong);
-		font-size: 1rem;
-		font-weight: 600;
-	}
-
-	.panel {
-		background: var(--surface-strong);
-		border-radius: 16px;
-		padding: 0.95rem;
-	}
-
-	.panel-header {
-		display: flex;
-		justify-content: space-between;
-		align-items: center;
-		gap: 0.8rem;
-		margin-bottom: 0.7rem;
-	}
-
-	h2 {
-		margin: 0;
-		font-size: 1.02rem;
-	}
-
-	.pager {
-		display: flex;
-		align-items: center;
-		gap: 0.45rem;
-		font-size: 0.9rem;
-		color: var(--text-soft);
-	}
-
-	.pager button {
-		border: 1px solid var(--control-border);
-		border-radius: 10px;
-		background: var(--control-bg-strong);
-		color: var(--text-strong);
-		padding: 0.3rem 0.55rem;
-		cursor: pointer;
-	}
-
-	.cards {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-		gap: 0.65rem;
-	}
-
-	.card {
-		background: var(--surface);
-		border-radius: 12px;
-		padding: 0.65rem;
-		border: 1px solid var(--control-border);
-	}
-
-	.card p {
-		margin: 0;
-	}
-
-	.time {
-		font-size: 0.82rem;
-		color: var(--panel-heading);
-		margin-bottom: 0.2rem;
-	}
-
-	.soft {
-		font-size: 0.83rem;
-		color: var(--text-soft);
-	}
-
-	.empty {
-		margin: 0;
-		color: var(--text-soft);
-	}
-
-	.attribution {
-		margin: 0;
-		color: var(--text-soft);
-		font-size: 0.8rem;
-	}
-
-	.attribution a {
-		color: var(--chip-color);
-	}
-
-	.state {
-		max-width: 980px;
-		margin: 0 auto;
-		background: linear-gradient(160deg, rgba(9, 35, 48, 0.9), rgba(7, 27, 39, 0.94));
-		color: var(--text-strong);
-		border-radius: 22px;
-		padding: 1.2rem;
-	}
-
-	.state p {
-		color: var(--text-soft);
-	}
-
-	.list {
-		display: grid;
-		gap: 0.5rem;
-		margin-top: 0.65rem;
-	}
-
-	.candidate {
-		text-align: left;
-		border: 1px solid rgba(188, 224, 232, 0.25);
-		background: rgba(10, 39, 50, 0.5);
-		color: var(--text-strong);
-		padding: 0.7rem;
-		border-radius: 12px;
-		cursor: pointer;
-	}
-
-	.province-list {
-		display: grid;
-		gap: 0.75rem;
-	}
-
-	.province-card {
-		background: rgba(9, 38, 50, 0.45);
-		border: 1px solid rgba(186, 225, 234, 0.2);
-		border-radius: 12px;
-		padding: 0.8rem;
-	}
-
-	.province-title {
-		margin: 0 0 0.55rem;
-		font-weight: 600;
-	}
-
-	.mini-list {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.42rem;
-	}
-
-	.mini-candidate {
-		border: 1px solid rgba(183, 225, 235, 0.22);
-		background: rgba(7, 31, 43, 0.65);
-		color: #e5f5fb;
-		border-radius: 999px;
-		padding: 0.38rem 0.7rem;
-		cursor: pointer;
-	}
-
-	.province-form {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem;
-		margin-top: 0.35rem;
-	}
-
-	.province-form input {
-		padding: 0.65rem 0.8rem;
-		border-radius: 10px;
-		border: 1px solid rgba(185, 222, 232, 0.35);
-		background: rgba(8, 34, 46, 0.6);
-		color: #f1fbff;
-		min-width: 180px;
-	}
-
-	.province-form button {
-		border: 0;
-		border-radius: 10px;
-		padding: 0.66rem 0.9rem;
-		background: linear-gradient(120deg, #44d5da, #86f4f4);
-		color: #083538;
-		font-weight: 700;
-		cursor: pointer;
-	}
-
-	.error {
-		color: #ffd2c7;
-	}
-
-	@media (max-width: 800px) {
-		.scene,
-		.photo,
-		.gradient,
-		.minimal-city-layer {
-			transition: none;
-		}
-
-		.current {
-			backdrop-filter: none;
-		}
-
-		.city-haze,
-		.skyline-waterline {
-			filter: none;
-		}
-
-		.celestial-body.sun {
-			box-shadow:
-				0 0 14px rgba(255, 208, 128, 0.72),
-				0 0 34px rgba(255, 184, 102, 0.34);
-		}
-
-		.celestial-body.moon {
-			box-shadow:
-				0 0 12px rgba(201, 220, 238, 0.58),
-				0 0 30px rgba(157, 191, 221, 0.26);
-		}
-
-		.hero-controls {
-			width: 100%;
-			justify-items: start;
-		}
-
-		.debug-panel {
-			min-width: 0;
-			width: 100%;
-		}
-	}
-</style>
-
-
-
