@@ -954,6 +954,51 @@
 		const idx = limits.findIndex((l) => currentWindKmh < l);
 		return idx === -1 ? 12 : idx;
 	});
+
+	// --- rediseño v2 it3
+	// --- rediseño v4
+	const cvBaseCond = $derived.by<WeatherCondition>(() => {
+		const cur = normalizeWeatherCondition(report?.current?.condition);
+		if (cur !== 'unknown') return cur;
+		const h = normalizeWeatherCondition(hourly[0]?.condition);
+		if (h !== 'unknown') return h;
+		return normalizeWeatherCondition(daily[0]?.condition);
+	});
+	const cvCond = $derived<WeatherCondition>(isDebugMode && forcedCondition ? forcedCondition : cvBaseCond);
+	const cvCondText = $derived(
+		String(report?.current?.description ?? hourly[0]?.description ?? daily[0]?.description ?? 'Sin descripción')
+	);
+	const cvPopNow = $derived(
+		cvFinite(hourly[0]?.precipitationProbabilityPercent)
+			? clampPercent(hourly[0].precipitationProbabilityPercent)
+			: activePrecipitationProbability
+	);
+	const cvDry = $derived(cvNoPrecip && activePrecipitationProbability === 0);
+	const CV_COL = 64;
+	const cvSpark = $derived.by(() => {
+		const temps = cvHoursShown.map((h, i) =>
+			i === 0 && cvTempValue !== null ? cvTempValue : cvFinite(h.temperatureC) ? h.temperatureC : null
+		);
+		const valid = temps.filter((t): t is number => t !== null);
+		if (valid.length < 2) return null;
+		const lo = Math.min(...valid);
+		const hi = Math.max(...valid);
+		const span = hi - lo || 1;
+		const pts = temps
+			.map((t, i) => (t === null ? null : `${i * CV_COL + CV_COL / 2},${(34 - ((t - lo) / span) * 28).toFixed(1)}`))
+			.filter(Boolean) as string[];
+		const width = temps.length * CV_COL;
+		return {
+			width,
+			line: `M${pts.join(' L')}`,
+			area: `M${pts[0].split(',')[0]},40 L${pts.join(' L')} L${pts[pts.length - 1].split(',')[0]},40 Z`
+		};
+	});
+	const cvWindFrom = $derived.by(() => {
+		if (cvWindDeg === null) return null;
+		const names = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+		return names[Math.round((((cvWindDeg % 360) + 360) % 360) / 45) % 8];
+	});
 </script>
 <svelte:window onpointerdown={onWindowPointerDown} onkeydown={onWindowKeydown} onscroll={onCvScroll} />
 
@@ -1060,7 +1105,7 @@
 {#snippet stateBackdrop()}
 	<div class="cv-state-backdrop" aria-hidden="true" style={visualsReady ? sceneToneStyle : undefined}>
 		{@render skyline()}
-		<div class="cv-scrim"></div>
+		<div class="cv-scrim cv-scrim--radial"></div>
 	</div>
 {/snippet}
 
@@ -1082,8 +1127,12 @@
 {#snippet creditBody()}
 	Imagen: {activeImage?.attributionText}
 	{#if activeImage?.attributionUrl}
-		· <a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente<span class="cv-sr"> (se abre en una pestaña nueva)</span></a>
+		{' · '}<a href={activeImage.attributionUrl} target="_blank" rel="noreferrer">fuente<span class="cv-sr"> (se abre en una pestaña nueva)</span></a>
 	{/if}
+{/snippet}
+
+{#snippet meterTicks()}
+	<span class="cv-meter-ticks" aria-hidden="true"><i style="left:25%"></i><i style="left:50%"></i><i style="left:75%"></i></span>
 {/snippet}
 
 <a class="cv-skip" href="#cv-forecast">Saltar a la previsión</a>
@@ -1091,7 +1140,7 @@
 <main id="contenido" class={`cv-page cv-page--${status}`} tabindex="-1">
 	{#if status === 'ok' && report}
 		<div
-			class={`cv-layout cv-mode--${mode} cv-cond--${activeWeatherCondition} ${cvHeroNight ? 'cv-is-night' : 'cv-is-day'}`}
+			class={`cv-layout cv-mode--${mode} cv-cond--${cvCond} ${cvHeroNight ? 'cv-is-night' : 'cv-is-day'} ${prefersReducedMotion ? 'cv-reduced' : ''}`}
 			style={visualsReady ? sceneToneStyle : undefined}
 		>
 			<div class="cv-stage">
@@ -1105,7 +1154,7 @@
 
 				<div class="cv-fx">
 					<WeatherFxLayer
-						condition={activeWeatherCondition}
+						condition={cvCond}
 						windKmh={currentWindKmh}
 						precipitationProbabilityPercent={activePrecipitationProbability}
 						renderer={activeRenderer}
@@ -1113,8 +1162,7 @@
 						onRendererResolved={(resolved) => (resolvedRenderer = resolved)}
 					/>
 				</div>
-				<div class="cv-scrim" aria-hidden="true"></div>
-				<div class="cv-scrim cv-scrim--side" aria-hidden="true"></div>
+				<div class="cv-scrim cv-scrim--radial" aria-hidden="true"></div>
 
 				<a class="cv-back cv-back--stage" href="/">
 					{@render icon('arrow-left')}
@@ -1123,42 +1171,48 @@
 
 				<section class="cv-hero" aria-labelledby="cv-title">
 					<p class="cv-eyebrow cv-reveal" style="--i:0">
-						{String(payload.provider ?? 'AEMET').toUpperCase()}{#if cvUpdated} · actualizado {cvUpdated}{/if}
+						<span class="cv-eyebrow-src">{String(payload.provider ?? 'AEMET').toUpperCase()}</span>
+						{#if cvUpdated}
+							<span class="cv-eyebrow-dot" aria-hidden="true">·</span>
+							<span class="cv-eyebrow-time">Actualizado a las {cvUpdated}</span>
+						{/if}
 					</p>
 					<p
 						class="cv-temp cv-reveal"
 						style="--i:1"
 						aria-label={cvTempValue !== null ? `${cvTempValue} grados` : 'Temperatura no disponible'}
 					>
-						<span class="cv-temp-num" aria-hidden="true">{cvShownTemp ?? '--'}</span><span class="cv-temp-deg" aria-hidden="true">°</span>
+						<span class="cv-temp-num" aria-hidden="true">{cvShownTemp ?? '--'}</span><span class="cv-temp-deg" aria-hidden="true"></span>
 					</p>
 					<h1 id="cv-title" class="cv-city cv-reveal" style="--i:2">
-						<span class="cv-city-pre">Tiempo en </span>{placeName}
+						<span class="cv-city-pre">Tiempo en </span><span class="cv-city-name">{placeName}</span>
 					</h1>
 					<p class="cv-place cv-reveal" style="--i:3">
 						{@render icon('pin')}
 						<span>{cvProvince}</span>
 					</p>
-					<div class="cv-hero-row cv-reveal" style="--i:4">
-						<p class="cv-cond cv-pill">
-							{@render weatherIcon(activeWeatherCondition, cvHeroNight, 'cv-icon--md')}
-							<span>{report.current?.description ?? 'Sin descripción'}</span>
+					<div class="cv-hero-row cv-glass cv-reveal" style="--i:4">
+						<p class="cv-cond">
+							{@render weatherIcon(cvCond, cvHeroNight, 'cv-icon--md')}
+							<span>{cvCondText}</span>
 						</p>
 						{#if cvToday}
+							<span class="cv-hero-sep" aria-hidden="true"></span>
 							<p class="cv-minmax">
-								<span class="cv-minmax-hi"><span class="cv-minmax-arrow" aria-hidden="true">↑</span><span class="cv-sr">Máxima </span>{formatTemp(cvTodayMax)}</span>
-								<span class="cv-minmax-lo"><span class="cv-minmax-arrow" aria-hidden="true">↓</span><span class="cv-sr">Mínima </span>{formatTemp(cvToday.minTemperatureC)}</span>
+								<span class="cv-minmax-hi"><span class="cv-minmax-arrow cv-warm" aria-hidden="true">↑</span><span class="cv-sr">Máxima </span>{formatTemp(cvTodayMax)}</span>
+								<span class="cv-minmax-lo"><span class="cv-minmax-arrow cv-cold" aria-hidden="true">↓</span><span class="cv-sr">Mínima </span>{formatTemp(cvToday.minTemperatureC)}</span>
 							</p>
 						{/if}
 					</div>
 				</section>
 
 				{#if mode === 'photo' && activeImage?.attributionText}
-					<p class="cv-credit cv-credit--stage">{@render creditBody()}</p>
+					<p class="cv-credit cv-credit--stage" title={activeImage.attributionText}>{@render creditBody()}</p>
 				{/if}
 			</div>
 
-			<div id="cv-forecast" class="cv-panel cv-sheet" tabindex="-1">
+			<div id="cv-forecast" class="cv-panel cv-sheet cv-panel-reveal" tabindex="-1">
+				<span class="cv-sheet-handle" aria-hidden="true"></span>
 				<header class={`cv-panel-head ${cvScrolled ? 'cv-panel-head--solid' : ''}`}>
 					<div
 						class="cv-modes"
@@ -1176,6 +1230,7 @@
 								role="radio"
 								aria-checked={mode === option.value}
 								aria-label={option.label}
+								title={option.label}
 								tabindex={mode === option.value ? 0 : -1}
 								onclick={() => (mode = option.value)}
 							>
@@ -1247,7 +1302,7 @@
 						<p class="cv-debug-label">Condición</p>
 						<div class="cv-debug-buttons">
 							{#each availableConditions as condition}
-								<button type="button" class="cv-chip" aria-pressed={condition === activeWeatherCondition} onclick={() => (forcedCondition = condition)}>{condition}</button>
+								<button type="button" class="cv-chip" aria-pressed={condition === cvCond} onclick={() => (forcedCondition = condition)}>{condition}</button>
 							{/each}
 						</div>
 						<div class="cv-debug-row">
@@ -1270,40 +1325,48 @@
 					</section>
 				{/if}
 
-				<section class="cv-band cv-reveal" style="--i:6" aria-labelledby="cv-hours-title">
+				<section class="cv-band cv-band--hours cv-reveal" style="--i:6" aria-labelledby="cv-hours-title">
 					<h2 id="cv-hours-title" class="cv-sectitle">{@render icon('clock')} Próximas horas</h2>
 					{#if cvHoursShown.length > 0}
-						<ol class="cv-hours" tabindex="0" aria-label="Previsión por horas">
-							{#each cvHoursShown as hour, index}
-								{#if index === 0}
-									<li class="cv-hour cv-hour--now">
-										<span class="cv-hour-time">Ahora</span>
-										{@render weatherIcon(activeWeatherCondition, cvHeroNight, 'cv-icon--xl')}
-										<span class="cv-sr">{report.current?.description ?? hour.description ?? ''}</span>
-										<span class="cv-hour-temp">{cvNowTemp !== null ? `${cvNowTemp}°` : formatTemp(hour.temperatureC)}</span>
-										{#if cvHasPop(hour.precipitationProbabilityPercent)}
-											<span class="cv-hour-pop">{formatPercent(hour.precipitationProbabilityPercent)}<span class="cv-sr"> de probabilidad de lluvia</span></span>
-										{/if}
-									</li>
-								{:else}
-									<li class="cv-hour">
-										<span class="cv-hour-time">{formatTime(hour.isoTime)}</span>
-										{@render weatherIcon(normalizeWeatherCondition(hour.condition), visualsReady && cvIsNightIso(hour.isoTime), 'cv-icon--lg')}
-										<span class="cv-sr">{hour.description ?? ''}</span>
-										<span class="cv-hour-temp">{formatTemp(hour.temperatureC)}</span>
-										{#if cvHasPop(hour.precipitationProbabilityPercent)}
-											<span class="cv-hour-pop">{formatPercent(hour.precipitationProbabilityPercent)}<span class="cv-sr"> de probabilidad de lluvia</span></span>
-										{/if}
-									</li>
-								{/if}
-							{/each}
-						</ol>
+						<div class="cv-hours-scroller" tabindex="0" role="region" aria-label="Previsión por horas, desplazable">
+							{#if cvSpark}
+								<svg class="cv-spark" width={cvSpark.width} height="40" viewBox={`0 0 ${cvSpark.width} 40`} preserveAspectRatio="none" aria-hidden="true">
+									<path class="cv-spark-area" d={cvSpark.area} />
+									<path class="cv-spark-line" d={cvSpark.line} fill="none" />
+								</svg>
+							{/if}
+							<ol class="cv-hours">
+								{#each cvHoursShown as hour, index}
+									{#if index === 0}
+										<li class="cv-hour cv-hour--now">
+											<span class="cv-hour-time">Ahora</span>
+											{@render weatherIcon(cvCond, cvHeroNight, 'cv-icon--lg')}
+											<span class="cv-sr">{cvCondText}</span>
+											<span class="cv-hour-pop">
+												{#if cvPopNow > 0}{cvPopNow}%<span class="cv-sr"> de probabilidad de lluvia</span>{/if}
+											</span>
+											<span class="cv-hour-temp">{cvNowTemp !== null ? `${cvNowTemp}°` : formatTemp(hour.temperatureC)}</span>
+										</li>
+									{:else}
+										<li class="cv-hour">
+											<span class="cv-hour-time">{formatTime(hour.isoTime)}</span>
+											{@render weatherIcon(normalizeWeatherCondition(hour.condition), visualsReady && cvIsNightIso(hour.isoTime), 'cv-icon--lg')}
+											<span class="cv-sr">{hour.description ?? ''}</span>
+											<span class="cv-hour-pop">
+												{#if cvHasPop(hour.precipitationProbabilityPercent)}{formatPercent(hour.precipitationProbabilityPercent)}<span class="cv-sr"> de probabilidad de lluvia</span>{/if}
+											</span>
+											<span class="cv-hour-temp">{formatTemp(hour.temperatureC)}</span>
+										</li>
+									{/if}
+								{/each}
+							</ol>
+						</div>
 					{:else}
 						<p class="cv-empty">No hay datos horarios disponibles.</p>
 					{/if}
 				</section>
 
-				<section class="cv-band cv-reveal" style="--i:7" aria-labelledby="cv-days-title">
+				<section class="cv-band cv-band--days cv-reveal" style="--i:7" aria-labelledby="cv-days-title">
 					<h2 id="cv-days-title" class="cv-sectitle">{@render icon('calendar')} Próximos días</h2>
 					{#if daily.length > 0}
 						<ol class="cv-days">
@@ -1314,7 +1377,7 @@
 										<span class="cv-sr">{index < 2 ? cvDayLabel(day.isoDate, index) + ', ' : ''}{cvDayLong(day.isoDate)}</span>
 									</span>
 									<span class="cv-day-icon">
-										{@render weatherIcon(normalizeWeatherCondition(day.condition), false, 'cv-icon--lg')}
+										{@render weatherIcon(normalizeWeatherCondition(day.condition), false, 'cv-icon--md')}
 										<span class="cv-sr">{day.description ?? ''}</span>
 									</span>
 									<span class="cv-day-pop">
@@ -1333,46 +1396,51 @@
 					{/if}
 				</section>
 
-				<section class="cv-band cv-reveal" style="--i:8" aria-labelledby="cv-metrics-title">
+				<section class="cv-band cv-band--metrics cv-reveal" style="--i:8" aria-labelledby="cv-metrics-title">
 					<h2 id="cv-metrics-title" class="cv-sectitle">{@render icon('list')} Detalles</h2>
 					<dl class={`cv-metrics ${mode === 'all-info' ? 'cv-metrics--full' : ''}`}>
-						<div class="cv-metric">
-							<dt>{@render icon('droplet')} <span aria-hidden="true">Lluvia</span><span class="cv-sr">Probabilidad de precipitación</span></dt>
-							<dd>
-								<span class="cv-metric-value">{formatPercent(activePrecipitationProbability)}</span>
-								<span class="cv-meter cv-meter--rain" aria-hidden="true"><span style={`width:${activePrecipitationProbability}%`}></span></span>
-							</dd>
-						</div>
-						<div class="cv-metric">
-							<dt>{@render icon('umbrella')} <span aria-hidden="true">Intens.</span><span class="cv-sr">Intensidad</span></dt>
-							<dd>
-								<span class={`cv-metric-value ${cvNoPrecip ? 'cv-metric-value--none' : ''}`}>
-									{#if cvNoPrecip}
-										<svg class="cv-icon cv-icon--strike" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true"><path d="M12 3.2s6 6.4 6 10.8a6 6 0 0 1-12 0c0-4.4 6-10.8 6-10.8z" /><path d="M4 4l16 16" /></svg>
-									{/if}
-									{cvIntensityLabel}
-								</span>
-								<span class="cv-meter cv-meter--steps" aria-hidden="true"><span style={`width:${cvNoPrecip ? 0 : precipitationLevelLabel === 'baja' ? 33 : precipitationLevelLabel === 'media' ? 66 : 100}%`}></span></span>
-							</dd>
-						</div>
+						{#if cvDry}
+							<div class="cv-metric cv-metric--dry">
+								<dt>{@render icon('umbrella')} Lluvia</dt>
+								<dd><span class="cv-metric-value cv-metric-value--text">Sin lluvia</span></dd>
+							</div>
+						{:else}
+							<div class="cv-metric">
+								<dt>{@render icon('droplet')} <span aria-hidden="true">Lluvia</span><span class="cv-sr">Probabilidad de precipitación</span></dt>
+								<dd>
+									<span class="cv-metric-value">{activePrecipitationProbability}<small>%</small></span>
+									<span class="cv-meter cv-meter--rain" aria-hidden="true">{@render meterTicks()}<span style={`width:${activePrecipitationProbability}%`}></span></span>
+								</dd>
+							</div>
+							<div class="cv-metric">
+								<dt>{@render icon('umbrella')} Intensidad</dt>
+								<dd>
+									<span class="cv-metric-value cv-metric-value--text">{cvIntensityLabel}</span>
+									<span class="cv-meter cv-meter--steps" aria-hidden="true">{@render meterTicks()}<span style={`width:${cvNoPrecip ? 0 : precipitationLevelLabel === 'baja' ? 33 : precipitationLevelLabel === 'media' ? 66 : 100}%`}></span></span>
+								</dd>
+							</div>
+						{/if}
 						<div class="cv-metric">
 							<dt>{@render icon('humidity')} Humedad</dt>
 							<dd>
-								<span class="cv-metric-value">{formatPercent(report.current?.humidityPercent)}</span>
-								<span class="cv-meter" aria-hidden="true"><span style={`width:${currentHumidity ?? 0}%`}></span></span>
+								<span class="cv-metric-value">{currentHumidity ?? '--'}<small>%</small></span>
+								<span class="cv-meter cv-meter--humidity" aria-hidden="true">{@render meterTicks()}<span style={`width:${currentHumidity ?? 0}%`}></span></span>
 							</dd>
 						</div>
-						<div class="cv-metric">
+						<div class="cv-metric cv-metric--wind">
 							<dt>{@render icon('wind')} Viento</dt>
-							<dd>
-								<span class="cv-metric-value">
-									<span class={`cv-wind-arrow ${cvWindDeg === null ? 'cv-wind-arrow--muted' : ''}`} style={`transform:rotate(${cvWindDeg ?? 0}deg)`} aria-hidden="true">
-										<svg class="cv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M6 14l6 6 6-6" /></svg>
+							<dd class="cv-wind">
+								<span class={`cv-compass ${cvWindDeg === null ? 'cv-compass--muted' : ''}`} aria-hidden="true">
+									<span class="cv-compass-n">N</span><span class="cv-compass-e">E</span><span class="cv-compass-s">S</span><span class="cv-compass-o">O</span>
+									<span class="cv-compass-needle" style={`transform:rotate(${(cvWindDeg ?? 0) + 180}deg)`}>
+										<svg class="cv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M7 10l5-5 5 5" /></svg>
 									</span>
-									{formatWind(report.current?.windKmh)}
 								</span>
-								<span class="cv-meter cv-meter--wind" aria-hidden="true"><span style={`width:${Math.round((cvBeaufort / 12) * 100)}%`}></span></span>
-								<span class="cv-sr">Fuerza {cvBeaufort} en la escala Beaufort{#if cvWindDeg !== null}, dirección {Math.round(cvWindDeg)} grados{/if}</span>
+								<span class="cv-wind-text">
+									<span class="cv-metric-value">{Number.isFinite(report.current?.windKmh) ? Math.round(report.current.windKmh) : '--'}<small> km/h</small></span>
+									<span class="cv-wind-dir" aria-hidden="true">{cvWindFrom ? `del ${cvWindFrom}` : 'Sin dirección'} · F{cvBeaufort}</span>
+								</span>
+								<span class="cv-sr">Fuerza {cvBeaufort} en la escala Beaufort{#if cvWindFrom}, viento del {cvWindFrom}{/if}</span>
 							</dd>
 						</div>
 						{#if mode === 'all-info'}
@@ -1382,7 +1450,7 @@
 							</div>
 							<div class="cv-metric">
 								<dt>{@render icon('calendar')} Hoy</dt>
-								<dd><span class="cv-metric-value">{cvToday ? formatDate(cvToday.isoDate) : '--'}</span></dd>
+								<dd><span class="cv-metric-value cv-metric-value--text">{cvToday ? formatDate(cvToday.isoDate) : '--'}</span></dd>
 							</div>
 							<div class="cv-metric">
 								<dt>{@render icon('pin')} Código INE</dt>
@@ -1390,7 +1458,7 @@
 							</div>
 							<div class="cv-metric">
 								<dt>{@render icon('external')} Fuente</dt>
-								<dd><span class="cv-metric-value">{String(payload.provider ?? 'AEMET').toUpperCase()}</span></dd>
+								<dd><span class="cv-metric-value cv-metric-value--text">{String(payload.provider ?? 'AEMET').toUpperCase()}</span></dd>
 							</div>
 						{/if}
 					</dl>
