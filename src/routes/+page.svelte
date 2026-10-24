@@ -12,6 +12,10 @@
 
 	const isNavigating = $derived(Boolean(navigating.to));
 
+	// Añadido: pliegue de provincia (abierto si ya hay valor)
+	let showProvince = $state(false);
+	const provinceOpen = $derived(showProvince || province.trim().length > 0);
+
 	async function loadProvinces() {
 		loadingProvinces = true;
 		provinceError = null;
@@ -53,103 +57,101 @@
 	}
 </script>
 
-<main id="contenido" class="home" tabindex="-1">
-	<div class="sky" aria-hidden="true">
-		<span class="orb orb-sun"></span>
-		<span class="orb orb-sea"></span>
+<a class="cv-skip" href="#city-input">Saltar al buscador</a>
+
+<main id="contenido" class="cv-home" tabindex="-1">
+	<div class="cv-home-bg" aria-hidden="true">
+		<div class="cv-tile cv-tile--day"><span class="cv-sun"></span></div>
+		<div class="cv-tile cv-tile--night"><span class="cv-moon"></span></div>
+		<div class="cv-tile cv-tile--dusk"><span class="cv-sun cv-sun--low"></span></div>
+		<svg class="cv-skyline" viewBox="0 0 1200 200" preserveAspectRatio="none">
+			<path d="M0 200V120l60-20 40 30 70-60 60 40 50-30 80 50 60-70 70 60 60-30 90 50 70-40 80 30 70-50 60 40 90-30 90 40 100-20v130z" />
+		</svg>
 	</div>
 
-	<section class="hero" aria-labelledby="home-title">
-		<div class="hero-head">
-			<span class="logo" aria-hidden="true">
-				<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<circle cx="12" cy="12" r="4.5" />
-					<path d="M12 3v1.5M3 12h1.5M5.6 5.6l1.1 1.1M18.4 5.6l-1.1 1.1" />
-					<path
-						class="logo-cloud"
-						d="M11 27h11.5a5 5 0 0 0 .8-9.94A7 7 0 0 0 10 18.3 4.4 4.4 0 0 0 11 27z"
-					/>
+	<section class="cv-home-inner" aria-labelledby="home-title">
+		<header class="cv-home-head cv-reveal" style="--i:0">
+			<span class="cv-logo" aria-hidden="true">
+				<svg class="cv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+					<circle cx="9" cy="9" r="3.5" />
+					<path d="M9 2v1.5M2 9h1.5M4 4l1 1M14 4l-1 1" />
+					<path d="M9 20h8.5a3.7 3.7 0 0 0 .6-7.36A5.2 5.2 0 0 0 8.2 13.6 3.2 3.2 0 0 0 9 20z" />
 				</svg>
 			</span>
-			<p class="eyebrow">Clima Visual</p>
-		</div>
+			<p class="cv-label">Clima Visual</p>
+		</header>
 
-		<h1 id="home-title">Tiempo por municipio en España</h1>
-		<p class="lead">
-			Consulta la temperatura, la lluvia y el viento de cualquier municipio. Los datos proceden de
-			AEMET. Si el nombre existe en varias provincias, puedes acotar la búsqueda.
+		<h1 id="home-title" class="cv-home-title cv-reveal" style="--i:1">
+			¿Qué tiempo hace <span class="cv-accent">en…?</span>
+		</h1>
+		<p class="cv-home-lead cv-reveal" style="--i:2">
+			Tiempo por municipio en España: temperatura, lluvia y viento sobre una foto o ilustración del
+			lugar.
 		</p>
 
-		<form class="search" onsubmit={searchCity} aria-label="Buscar el tiempo de un municipio">
-			<div class="field">
-				<label for="city-input">Ciudad</label>
-				<div class="control">
-					<svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z" />
-						<circle cx="12" cy="9.5" r="2.5" />
-					</svg>
-					<input
-						id="city-input"
-						bind:value={city}
-						oninput={() => (cityError = null)}
-						placeholder="Oviedo"
-						required
-						autocomplete="off"
-						autocapitalize="words"
-						spellcheck="false"
-						enterkeyhint="search"
-						aria-invalid={cityError ? 'true' : undefined}
-						aria-describedby={cityError ? 'city-error' : undefined}
-					/>
-				</div>
-				{#if cityError}
-					<p id="city-error" class="field-error" role="alert">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-							<circle cx="12" cy="12" r="9" />
-							<path d="M12 7.5v5.5M12 16.5h.01" />
-						</svg>
-						{cityError}
-					</p>
-				{/if}
+		<form class="cv-search-form cv-reveal" style="--i:3" onsubmit={searchCity} aria-label="Buscar el tiempo de un municipio">
+			<label for="city-input" class="cv-sr">Ciudad</label>
+			<div class="cv-search">
+				<svg class="cv-icon cv-icon--lg cv-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z" />
+					<circle cx="12" cy="9.5" r="2.5" />
+				</svg>
+				<input
+					id="city-input"
+					bind:value={city}
+					oninput={() => (cityError = null)}
+					placeholder="Escribe un municipio"
+					required
+					autocomplete="off"
+					autocapitalize="words"
+					spellcheck="false"
+					enterkeyhint="search"
+					aria-invalid={cityError ? 'true' : undefined}
+					aria-describedby={cityError ? 'city-error' : undefined}
+				/>
 			</div>
+			{#if cityError}
+				<p id="city-error" class="cv-error" role="alert">{cityError}</p>
+			{/if}
 
-			<div class="field">
-				<div class="label-row">
-					<label for="province-input">Provincia <span class="optional">(opcional)</span></label>
+			<button
+				type="button"
+				class="cv-toggle"
+				aria-expanded={provinceOpen}
+				aria-controls="cv-prov"
+				onclick={() => (showProvince = !provinceOpen)}
+			>
+				{provinceOpen ? '− Ocultar provincia' : '+ Acotar por provincia'}
+			</button>
+
+			<div id="cv-prov" class="cv-search-prov" hidden={!provinceOpen}>
+				<div class="cv-prov-row">
+					<label for="province-input" class="cv-label">Provincia <span class="cv-muted">(opcional)</span></label>
 					<button
 						type="button"
-						class="link-button"
+						class="cv-link"
 						onclick={() => void loadProvinces()}
 						disabled={loadingProvinces}
 						aria-busy={loadingProvinces}
 					>
 						{#if loadingProvinces}
-							<span class="spinner" aria-hidden="true"></span>
-							Cargando provincias…
+							<span class="cv-spinner" aria-hidden="true"></span> Cargando provincias…
 						{:else}
-							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-								<path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
-							</svg>
 							Cargar provincias
 						{/if}
 					</button>
 				</div>
-				<div class="control">
-					<svg class="control-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<path d="M9 4 3 6.5v13.5l6-2.5 6 2.5 6-2.5V4l-6 2.5L9 4z" />
-						<path d="M9 4v13.5M15 6.5V20" />
-					</svg>
-					<input
-						id="province-input"
-						bind:value={province}
-						list="province-list"
-						placeholder="Asturias"
-						autocomplete="off"
-						autocapitalize="words"
-						aria-describedby="province-hint"
-					/>
-				</div>
-				<p id="province-hint" class="hint" aria-live="polite">
+				<input
+					id="province-input"
+					class="cv-prov-input"
+					bind:value={province}
+					list="province-list"
+					placeholder="Asturias"
+					autocomplete="off"
+					autocapitalize="words"
+					aria-describedby="province-hint"
+				/>
+				<p id="province-hint" class="cv-hint" aria-live="polite">
 					{#if provinces.length > 0}
 						{provinces.length} provincias disponibles: empieza a escribir para ver sugerencias.
 					{:else}
@@ -157,26 +159,18 @@
 					{/if}
 				</p>
 				{#if provinceError}
-					<p class="field-error" role="alert">
-						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
-							<circle cx="12" cy="12" r="9" />
-							<path d="M12 7.5v5.5M12 16.5h.01" />
-						</svg>
-						{provinceError}
-					</p>
+					<p class="cv-error" role="alert">{provinceError}</p>
 				{/if}
 			</div>
 
-			<button type="submit" class="primary" disabled={isNavigating} aria-busy={isNavigating}>
+			<button type="submit" class="cv-cta" disabled={isNavigating} aria-busy={isNavigating}>
 				{#if isNavigating}
-					<span class="spinner" aria-hidden="true"></span>
-					Cargando…
+					<span class="cv-spinner" aria-hidden="true"></span> Cargando…
 				{:else}
-					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<circle cx="11" cy="11" r="6.5" />
-						<path d="M20 20l-4.2-4.2" />
-					</svg>
 					Ver clima
+					<svg class="cv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<path d="M5 12h14M13 6l6 6-6 6" />
+					</svg>
 				{/if}
 			</button>
 		</form>
@@ -189,359 +183,194 @@
 			</datalist>
 		{/if}
 
-		<ul class="facts" aria-label="Qué puedes consultar">
-			<li>
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<path d="M10 14.5V5a2 2 0 1 1 4 0v9.5a4 4 0 1 1-4 0z" />
-				</svg>
-				Temperatura
-			</li>
-			<li>
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<path d="M12 3.2s6 6.4 6 10.8a6 6 0 0 1-12 0c0-4.4 6-10.8 6-10.8z" />
-				</svg>
-				Lluvia
-			</li>
-			<li>
-				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<path d="M3 8h10.5a2.5 2.5 0 1 0-2.5-2.5M3 12h15.5a2.5 2.5 0 1 1-2.5 2.5M3 16h7" />
-				</svg>
-				Viento
-			</li>
-			<li class="source">Datos oficiales de AEMET</li>
-		</ul>
+		<footer class="cv-home-foot cv-reveal" style="--i:4">
+			<ul aria-label="Qué puedes consultar">
+				<li>Temperatura</li>
+				<li>Lluvia</li>
+				<li>Viento</li>
+			</ul>
+			<p>Datos oficiales de AEMET</p>
+		</footer>
 	</section>
 </main>
 
 <style>
-	.home {
+	.cv-home {
+		--bg: #f4efe6; --surface: #fffdf8; --ink: #14161a; --muted: #5e6470; --line: #e2dacb;
+		--accent: #ff5a1f; --accent-ink: #fff; --danger: #c0262d;
+		--ease: cubic-bezier(.2, .8, .2, 1);
 		position: relative;
 		isolation: isolate;
 		min-height: 100vh;
 		min-height: 100svh;
 		display: grid;
-		place-items: center;
-		padding: clamp(1rem, 4vw, 2.5rem);
+		align-items: center;
+		padding: clamp(1.25rem, 5vw, 4rem);
+		background: var(--bg);
+		color: var(--ink);
+		font-family: var(--font-display, var(--font-sans, system-ui)), system-ui, sans-serif;
+		line-height: 1.5;
 		overflow: hidden;
 	}
+	@media (prefers-color-scheme: dark) {
+		.cv-home {
+			--bg: #0b0f17; --surface: #121826; --ink: #f2f4f8; --muted: #9aa3b5; --line: #232b3b;
+			--accent: #ffb21f; --accent-ink: #14161a; --danger: #ff8a8f;
+		}
+	}
+	.cv-home:focus { outline: none; }
+	.cv-home :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 
-	.home:focus {
-		outline: none;
+	.cv-skip {
+		position: fixed; top: 10px; left: 10px; z-index: 50;
+		padding: 12px 18px; min-height: 44px; border-radius: 12px;
+		background: #ff5a1f; color: #fff; font-weight: 700; text-decoration: none;
+		transform: translateY(-160%); transition: transform .2s;
+	}
+	.cv-skip:focus { transform: none; }
+
+	.cv-sr {
+		position: absolute; width: 1px; height: 1px; overflow: hidden;
+		clip-path: inset(50%); white-space: nowrap;
 	}
 
-	.sky {
-		position: absolute;
-		inset: 0;
-		z-index: -1;
-		pointer-events: none;
+	/* Collage */
+	.cv-home-bg {
+		position: absolute; inset: 0; z-index: -1;
+		display: grid; grid-template-columns: repeat(3, 1fr);
+		opacity: .35; filter: blur(28px) saturate(1.2);
+		transform: scale(1.1);
+		animation: cv-ken 1.2s var(--ease) both;
 	}
-
-	.orb {
-		position: absolute;
-		border-radius: 50%;
-		filter: blur(70px);
-		opacity: 0.5;
+	.cv-tile { position: relative; }
+	.cv-tile--day { background: linear-gradient(180deg, #5d9cf0, #ffd9b0); }
+	.cv-tile--night { background: linear-gradient(180deg, #070b16, #2a2b4d); }
+	.cv-tile--dusk { background: linear-gradient(180deg, #ff8a5c, #6b3d7a); }
+	.cv-sun, .cv-moon {
+		position: absolute; top: 25%; left: 50%;
+		width: 30%; aspect-ratio: 1; border-radius: 50%;
 	}
-
-	.orb-sun {
-		width: 44vmax;
-		height: 44vmax;
-		top: -16vmax;
-		right: -12vmax;
-		background: radial-gradient(circle, #ffd27a 0%, transparent 65%);
+	.cv-sun { background: #ffd36b; }
+	.cv-sun--low { top: 60%; background: #ffb24a; }
+	.cv-moon { background: #e8e9f2; }
+	.cv-skyline {
+		position: absolute; inset: auto 0 0; width: 100%; height: 30%; fill: #1d263b;
 	}
+	@media (prefers-color-scheme: dark) { .cv-home-bg { opacity: .28; } }
 
-	.orb-sea {
-		width: 52vmax;
-		height: 52vmax;
-		bottom: -24vmax;
-		left: -18vmax;
-		background: radial-gradient(circle, #7fdbe0 0%, transparent 65%);
+	.cv-home-inner { width: min(980px, 100%); margin: 0 auto; }
+
+	.cv-home-head { display: flex; align-items: center; gap: .65rem; }
+	.cv-logo {
+		display: grid; place-items: center; width: 44px; height: 44px;
+		border-radius: 14px; background: var(--accent); color: var(--accent-ink);
 	}
-
-	.hero {
-		width: min(640px, 100%);
-		background: var(--card);
-		color: var(--ink);
-		border: 1px solid var(--card-border);
-		border-radius: 28px;
-		padding: clamp(1.5rem, 5vw, 2.75rem);
-		box-shadow: var(--card-shadow);
+	.cv-icon { width: 20px; height: 20px; flex: none; }
+	.cv-icon--lg { width: 28px; height: 28px; }
+	.cv-label {
+		font-size: .75rem; font-weight: 700; letter-spacing: .12em; text-transform: uppercase;
 	}
+	.cv-muted { color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: 0; }
 
-	.hero-head {
-		display: flex;
-		align-items: center;
-		gap: 0.7rem;
-	}
-
-	.logo {
-		width: 42px;
-		height: 42px;
-		display: grid;
-		place-items: center;
-		border-radius: 13px;
-		background: linear-gradient(140deg, #0f5f6e, #0a2d39);
-		color: #ffc44d;
-		box-shadow: 0 6px 16px -6px rgba(10, 45, 57, 0.6);
-	}
-
-	.logo svg {
-		width: 28px;
-		height: 28px;
-	}
-
-	.logo-cloud {
-		stroke: #e8f6fa;
-		fill: #0d4553;
-	}
-
-	.eyebrow {
-		margin: 0;
-		font-size: 0.78rem;
-		font-weight: 700;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
-		color: var(--brand);
-	}
-
-	h1 {
-		margin: 1.2rem 0 0.65rem;
-		font-size: clamp(1.9rem, 5.2vw, 2.65rem);
-		line-height: 1.07;
-		letter-spacing: -0.025em;
+	.cv-home-title {
+		margin: 1.5rem 0 1rem;
+		font-size: clamp(3rem, 10vw, 7rem);
+		font-weight: 800; line-height: .9; letter-spacing: -0.05em;
 		text-wrap: balance;
 	}
+	.cv-accent { color: var(--accent); }
+	.cv-home-lead { max-width: 48ch; margin: 0; color: var(--muted); font-size: 1.1rem; }
 
-	.lead {
-		margin: 0;
-		max-width: 56ch;
-		color: var(--ink-muted);
-		font-size: 1.02rem;
-		line-height: 1.55;
-		text-wrap: pretty;
+	.cv-search-form { margin-top: 2.25rem; display: grid; gap: .85rem; max-width: 720px; }
+	.cv-search {
+		position: relative; display: flex; align-items: center;
+		height: 64px; border-radius: 20px;
+		background: var(--surface); border: 2px solid var(--line);
+		box-shadow: 0 10px 40px -12px #14161a33;
+		transition: border-color .2s;
+	}
+	.cv-search:focus-within { border-color: var(--accent); }
+	.cv-search-icon { margin-left: 1rem; color: var(--accent); }
+	.cv-search input {
+		flex: 1; min-width: 0; height: 100%; padding: 0 1rem .1rem .75rem;
+		border: 0; background: transparent; color: var(--ink);
+		font: 700 1.35rem/1 inherit; font-family: inherit; letter-spacing: -0.01em;
+	}
+	.cv-search input:focus-visible { outline: none; }
+	.cv-search input::placeholder { color: var(--muted); font-weight: 500; opacity: 1; }
+
+	.cv-toggle, .cv-link {
+		justify-self: start; display: inline-flex; align-items: center; gap: .4rem;
+		min-height: 44px; padding: 0 .25rem;
+		border: 0; background: none; color: var(--ink);
+		font: 600 .95rem inherit; font-family: inherit; cursor: pointer;
+		text-decoration: underline; text-decoration-color: var(--accent);
+		text-decoration-thickness: 2px; text-underline-offset: 4px;
+	}
+	.cv-link:disabled { cursor: progress; opacity: .7; }
+
+	.cv-search-prov {
+		display: grid; gap: .5rem; padding: 1rem;
+		border-radius: 20px; background: var(--surface); border: 1px solid var(--line);
+		animation: cv-in .3s var(--ease) both;
+	}
+	.cv-search-prov[hidden] { display: none; }
+	.cv-prov-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .5rem; }
+	.cv-prov-input {
+		width: 100%; min-height: 48px; padding: 0 1rem; border-radius: 14px;
+		border: 1px solid var(--line); background: var(--bg); color: var(--ink);
+		font: 500 1rem inherit; font-family: inherit;
+	}
+	.cv-prov-input:focus-visible { border-color: var(--accent); }
+	.cv-hint { margin: 0; font-size: .85rem; color: var(--muted); }
+	.cv-error {
+		margin: 0; padding: .55rem .8rem; border-radius: 12px;
+		border-left: 4px solid var(--danger); background: var(--surface);
+		color: var(--danger); font-weight: 600; font-size: .9rem;
 	}
 
-	.search {
-		margin-top: 1.8rem;
-		display: grid;
-		gap: 1.15rem;
+	.cv-cta {
+		display: inline-flex; align-items: center; justify-content: center; gap: .6rem;
+		width: 100%; min-height: 56px; padding: 0 1.75rem;
+		border: 0; border-radius: 20px;
+		background: var(--accent); color: var(--accent-ink);
+		font: 800 1.1rem inherit; font-family: inherit; cursor: pointer;
+		transition: transform .15s var(--ease), filter .15s;
+	}
+	.cv-cta:hover:not(:disabled) { transform: translateY(-2px); filter: brightness(1.05); }
+	.cv-cta:disabled { cursor: progress; opacity: .8; }
+
+	.cv-spinner {
+		width: 1em; height: 1em; border-radius: 50%;
+		border: 2px solid currentColor; border-right-color: transparent;
+		animation: cv-spin .8s linear infinite;
 	}
 
-	.field {
-		display: grid;
-		gap: 0.45rem;
+	.cv-home-foot {
+		margin-top: 3rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
+		display: flex; flex-wrap: wrap; justify-content: space-between; gap: .75rem;
+		font-size: .85rem; color: var(--muted);
+	}
+	.cv-home-foot ul { display: flex; gap: 1.25rem; margin: 0; padding: 0; list-style: none; }
+	.cv-home-foot li::before { content: '●'; color: var(--accent); margin-right: .4rem; font-size: .6em; vertical-align: middle; }
+	.cv-home-foot p { margin: 0; font-weight: 600; }
+
+	@media (min-width: 768px) {
+		.cv-search-form { grid-template-columns: 1fr auto; align-items: start; }
+		.cv-search, .cv-error, .cv-toggle, .cv-search-prov { grid-column: 1; }
+		.cv-cta { grid-column: 2; grid-row: 1; width: auto; height: 64px; }
 	}
 
-	label {
-		font-size: 0.92rem;
-		font-weight: 600;
-		color: var(--ink);
-	}
+	.cv-reveal { animation: cv-in 480ms var(--ease) both; animation-delay: calc(var(--i, 0) * 60ms); }
+	@keyframes cv-in { from { opacity: 0; transform: translateY(16px); } }
+	@keyframes cv-ken { from { transform: scale(1.16); } }
+	@keyframes cv-spin { to { transform: rotate(360deg); } }
 
-	.optional {
-		font-weight: 400;
-		color: var(--ink-muted);
-	}
-
-	.label-row {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		justify-content: space-between;
-		gap: 0.5rem 0.75rem;
-	}
-
-	.control {
-		position: relative;
-	}
-
-	.control-icon {
-		position: absolute;
-		left: 0.9rem;
-		top: 50%;
-		width: 1.15rem;
-		height: 1.15rem;
-		transform: translateY(-50%);
-		color: var(--ink-muted);
-		pointer-events: none;
-	}
-
-	input {
-		width: 100%;
-		min-height: 3rem;
-		padding: 0.75rem 0.95rem 0.75rem 2.7rem;
-		border-radius: 14px;
-		border: 1px solid var(--field-border);
-		background: var(--field-bg);
-		color: var(--ink);
-		font-size: 1rem;
-		transition:
-			border-color 0.15s ease,
-			box-shadow 0.15s ease;
-	}
-
-	input::placeholder {
-		color: var(--ink-subtle);
-		opacity: 1;
-	}
-
-	input:hover {
-		border-color: var(--field-border-hover);
-	}
-
-	input:focus-visible {
-		outline: 2px solid transparent;
-		border-color: var(--focus);
-		box-shadow: 0 0 0 4px var(--focus-ring);
-	}
-
-	input[aria-invalid='true'] {
-		border-color: var(--danger);
-	}
-
-	.hint {
-		margin: 0;
-		font-size: 0.84rem;
-		color: var(--ink-muted);
-	}
-
-	.field-error {
-		margin: 0;
-		display: flex;
-		align-items: center;
-		gap: 0.45rem;
-		padding: 0.5rem 0.7rem;
-		border-radius: 10px;
-		background: var(--danger-bg);
-		color: var(--danger);
-		font-size: 0.86rem;
-		font-weight: 500;
-	}
-
-	.field-error svg {
-		width: 1.05rem;
-		height: 1.05rem;
-		flex: none;
-	}
-
-	.link-button {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-		min-height: 2rem;
-		padding: 0.3rem 0.6rem;
-		margin: -0.3rem -0.6rem;
-		border: 0;
-		border-radius: 9px;
-		background: transparent;
-		color: var(--brand);
-		font-size: 0.86rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: background-color 0.15s ease;
-	}
-
-	.link-button svg {
-		width: 1rem;
-		height: 1rem;
-	}
-
-	.link-button:hover:not(:disabled) {
-		background: var(--brand-soft);
-	}
-
-	.link-button:disabled {
-		cursor: progress;
-		opacity: 0.8;
-	}
-
-	.primary {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		gap: 0.55rem;
-		min-height: 3.15rem;
-		margin-top: 0.3rem;
-		padding: 0.8rem 1.2rem;
-		border: 0;
-		border-radius: 14px;
-		background: linear-gradient(120deg, #ffbd3a, #ffd978);
-		color: var(--accent-ink);
-		font-size: 1.02rem;
-		font-weight: 700;
-		cursor: pointer;
-		box-shadow:
-			0 10px 24px -10px rgba(245, 165, 36, 0.75),
-			inset 0 -2px 0 rgba(0, 0, 0, 0.08);
-		transition:
-			transform 0.15s ease,
-			filter 0.15s ease;
-	}
-
-	.primary svg {
-		width: 1.15rem;
-		height: 1.15rem;
-	}
-
-	.primary:hover:not(:disabled) {
-		filter: brightness(1.04);
-		transform: translateY(-1px);
-	}
-
-	.primary:active:not(:disabled) {
-		transform: translateY(0);
-	}
-
-	.primary:disabled {
-		cursor: progress;
-		opacity: 0.85;
-	}
-
-	.facts {
-		list-style: none;
-		margin: 1.8rem 0 0;
-		padding: 1.2rem 0 0;
-		border-top: 1px solid var(--card-border);
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: 0.6rem 1.25rem;
-		font-size: 0.86rem;
-		color: var(--ink-muted);
-	}
-
-	.facts li {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.4rem;
-	}
-
-	.facts svg {
-		width: 1.05rem;
-		height: 1.05rem;
-		color: var(--brand);
-	}
-
-	.facts .source {
-		margin-left: auto;
-		font-size: 0.8rem;
-	}
-
-	@media (max-width: 520px) {
-		.hero {
-			border-radius: 22px;
+	@media (prefers-reduced-motion: reduce) {
+		.cv-home *, .cv-home-bg, .cv-skip {
+			animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+			transition-duration: .01ms !important;
 		}
-
-		.facts .source {
-			margin-left: 0;
-			width: 100%;
-		}
-	}
-
-	@media (prefers-color-scheme: dark) {
-		.orb {
-			opacity: 0.2;
-		}
+		.cv-spinner { animation: none; border-right-color: currentColor; opacity: .6; }
 	}
 </style>
